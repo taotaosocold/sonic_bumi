@@ -4,7 +4,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/base_link.STL"/>
+                <mesh filename="../../meshes/bumi3/base_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1"/>
@@ -13,7 +13,7 @@
         <!-- <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/base_link.STL"/>
+                <mesh filename="../../meshes/bumi3/base_link.STL"/>
             </geometry>
         </collision> -->
         <inertial>
@@ -26,7 +26,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/waist_yaw_link.STL"/>
+                <mesh filename="../../meshes/bumi3/waist_yaw_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1"/>
@@ -35,7 +35,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/waist_yaw_link.STL"/>
+                <mesh filename="../../meshes/bumi3/waist_yaw_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -55,7 +55,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_arm_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_arm_pitch_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="0.498039215686275 0.498039215686275 0.498039215686275 1"/>
@@ -64,7 +64,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_arm_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_arm_pitch_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -84,7 +84,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_arm_roll_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_arm_roll_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="0.498039215686275 0.498039215686275 0.498039215686275 1"/>
@@ -93,7 +93,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_arm_roll_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_arm_roll_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -113,7 +113,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_arm_yaw_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_arm_yaw_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="0.498039215686275 0.498039215686275 0.498039215686275 1"/>
@@ -122,7 +122,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_arm_yaw_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_arm_yaw_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -142,7 +142,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_elbow_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_elbow_pitch_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="0.498039215686275 0.498039215686275 0.498039215686275 1"/>
@@ -151,7 +151,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_elbow_pitch_link.STL" scale="1.15 1.15 1.15"/>
+                <mesh filename="../../meshes/bumi3/l_elbow_pitch_link.STL" scale="1.15 1.15 1.15"/>
             </geometry>
         </collision>
         <inertial>
@@ -171,7 +171,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_arm_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_arm_pitch_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -180,7 +180,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_arm_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_arm_pitch_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -200,7 +200,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_arm_roll_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_arm_roll_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -209,7 +209,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_arm_roll_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_arm_roll_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -229,7 +229,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_arm_yaw_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_arm_yaw_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -238,7 +238,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_arm_yaw_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_arm_yaw_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -258,7 +258,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_elbow_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_elbow_pitch_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -267,7 +267,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_elbow_pitch_link.STL"  scale="1.15 1.15 1.15"/>
+                <mesh filename="../../meshes/bumi3/r_elbow_pitch_link.STL"  scale="1.15 1.15 1.15"/>
             </geometry>
         </collision>
         <inertial>
@@ -287,7 +287,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_leg_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_leg_pitch_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -296,7 +296,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_leg_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_leg_pitch_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -316,7 +316,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_leg_roll_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_leg_roll_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -325,7 +325,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_leg_roll_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_leg_roll_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -345,7 +345,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_leg_yaw_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_leg_yaw_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -354,7 +354,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_leg_yaw_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_leg_yaw_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -374,7 +374,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_knee_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_knee_pitch_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -383,7 +383,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_knee_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_knee_pitch_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -403,7 +403,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_ankle_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_ankle_pitch_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -412,7 +412,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_ankle_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_ankle_pitch_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -432,7 +432,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_ankle_roll_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_ankle_roll_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -443,7 +443,7 @@
         <!-- <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/l_ankle_roll_link.STL"/>
+                <mesh filename="../../meshes/bumi3/l_ankle_roll_link.STL"/>
             </geometry>
         </collision> -->
         <collision name="l_foot_support_0">
@@ -512,7 +512,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_leg_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_leg_pitch_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -521,7 +521,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_leg_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_leg_pitch_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -541,7 +541,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_leg_roll_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_leg_roll_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -550,7 +550,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_leg_roll_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_leg_roll_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -570,7 +570,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_leg_yaw_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_leg_yaw_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -579,7 +579,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_leg_yaw_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_leg_yaw_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -599,7 +599,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_knee_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_knee_pitch_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -608,7 +608,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_knee_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_knee_pitch_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -628,7 +628,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_ankle_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_ankle_pitch_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -637,7 +637,7 @@
         <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_ankle_pitch_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_ankle_pitch_link.STL"/>
             </geometry>
         </collision>
         <inertial>
@@ -657,7 +657,7 @@
         <visual>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_ankle_roll_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_ankle_roll_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -666,7 +666,7 @@
         <!-- <collision>
             <origin rpy="0 0 0" xyz="0 0 0"/>
             <geometry>
-                <mesh filename="../meshes/r_ankle_roll_link.STL"/>
+                <mesh filename="../../meshes/bumi3/r_ankle_roll_link.STL"/>
             </geometry>
         </collision> -->
         <collision name="r_foot_support_0">
