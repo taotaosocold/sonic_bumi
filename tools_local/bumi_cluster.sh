@@ -12,11 +12,14 @@ usage() {
 Usage:
   tools_local/bumi_cluster.sh status
   tools_local/bumi_cluster.sh training-status RUN_ID
+  tools_local/bumi_cluster.sh single-training-status gpu14|gpu15 RUN_ID
   tools_local/bumi_cluster.sh verify-code [EXPECTED_SHA]
   tools_local/bumi_cluster.sh launch-nccl RUN_ID
   tools_local/bumi_cluster.sh launch-smoke RUN_ID
+  tools_local/bumi_cluster.sh launch-single-smoke gpu14|gpu15 RUN_ID
   tools_local/bumi_cluster.sh launch-smoke-filtered RUN_ID
   tools_local/bumi_cluster.sh launch-train RUN_ID
+  tools_local/bumi_cluster.sh launch-single-train gpu14|gpu15 RUN_ID
   tools_local/bumi_cluster.sh launch-train-filtered RUN_ID
   tools_local/bumi_cluster.sh launch-ground-finetune RUN_ID CHECKPOINT
   tools_local/bumi_cluster.sh remote-node MACHINE_RANK RUN_ID ENVS ITERATIONS ROBOT_DIR SMPL_DIR EXP_NAME
@@ -41,6 +44,7 @@ load_config() {
   NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-=bond4}"
   NCCL_IB_HCA="${NCCL_IB_HCA:-}"
   NCCL_MASTER_PORT="${NCCL_MASTER_PORT:-29518}"
+  SINGLE_NODE_MASTER_PORT="${SINGLE_NODE_MASTER_PORT:-29519}"
 }
 
 ssh_node() {
@@ -81,6 +85,18 @@ training_status() {
     'run=%q; grep "Learning iteration" "$run/node0.log" | tail -1; grep -E "Mean rewards:|Total timesteps:|Iteration time:|Total time:|ETA:" "$run/node0.log" | tail -5; find "$run" -maxdepth 1 -type f \( -name "last.pt" -o -name "model_step_*.pt" \) -printf "%%f %%s bytes\\n" | sort | tail -10' \
     "$RUN_ROOT/$run_id"
   ssh_node gpu14 "$remote_cmd"
+}
+
+single_training_status() {
+  local node="$1" run_id="$2" remote_cmd pattern
+  [[ "$node" == "gpu14" || "$node" == "gpu15" ]] || { echo "NODE must be gpu14 or gpu15" >&2; exit 2; }
+  [[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Unsafe RUN_ID" >&2; exit 2; }
+  pattern="^$REMOTE_PYTHON -u gear_sonic/train_agent_trl.py .*experiment_dir=$RUN_ROOT/$run_id"
+  printf -v remote_cmd \
+    'run=%q; log="$run/node0.log"; test -f "$log" || { echo "Missing log: $log"; exit 1; }; stat -c "log_bytes=%%s log_modified=%%y" "$log"; printf "training_ranks="; pgrep -fc %q || true; nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader; grep -E "Traceback|Error executing|CUDA out of memory|NCCL.*(error|Error)|ProcessExitedException" "$log" | tail -5 || true; grep "Learning iteration" "$log" | tail -1; grep -E "Mean rewards:|Total timesteps:|Iteration time:|Total time:|ETA:" "$log" | tail -5; find "$run" -maxdepth 1 -type f \( -name "last.pt" -o -name "model_step_*.pt" \) -printf "%%f %%s bytes\\n" | sort | tail -10' \
+    "$RUN_ROOT/$run_id" "$pattern"
+  echo "[$node / single-node]"
+  ssh_node "$node" "$remote_cmd"
 }
 
 verify_code() {
@@ -126,6 +142,21 @@ remote_ground_start() {
   ssh_node "$node" "$remote_cmd"
 }
 
+remote_single_start() {
+  local node="$1" run_id="$2" envs="$3" iterations="$4"
+  local robot_dir="$5" smpl_dir="$6" exp_name="$7"
+  local inner remote_cmd session_name
+  session_name="sonic_${run_id}_single"
+  printf -v inner \
+    "bash tools_local/bumi_cluster.sh remote-single-node 0 %q %q %q %q %q %q > %q 2>&1 < /dev/null" \
+    "$run_id" "$envs" "$iterations" "$robot_dir" "$smpl_dir" "$exp_name" \
+    "$RUN_ROOT/$run_id/node0.log"
+  printf -v remote_cmd \
+    "mkdir -p %q && command -v tmux >/dev/null && ! tmux has-session -t %q 2>/dev/null && tmux new-session -d -s %q -c %q %q && echo STARTED_TMUX:%q" \
+    "$RUN_ROOT/$run_id" "$session_name" "$session_name" "$REMOTE_REPO" "$inner" "$session_name"
+  ssh_node "$node" "$remote_cmd"
+}
+
 launch() {
   local mode="$1" run_id="$2" envs iterations robot_dir smpl_dir exp_name
   # 基础 exp 保持原有全量数据集行为；filtered 变体只多剔除台面/梯子依赖动作。
@@ -161,6 +192,29 @@ launch() {
   remote_start gpu15 1 "$run_id" "$envs" "$iterations" "$robot_dir" "$smpl_dir" "$exp_name"
   remote_start gpu14 0 "$run_id" "$envs" "$iterations" "$robot_dir" "$smpl_dir" "$exp_name"
   echo "Started $mode: run=$run_id, envs/GPU=$envs, world=16, iterations=$iterations, exp=$exp_name"
+}
+
+launch_single() {
+  local mode="$1" node="$2" run_id="$3" envs iterations robot_dir smpl_dir
+  [[ "$node" == "gpu14" || "$node" == "gpu15" ]] || { echo "NODE must be gpu14 or gpu15" >&2; exit 2; }
+  [[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Unsafe RUN_ID" >&2; exit 2; }
+  case "$mode" in
+    smoke)
+      envs="${SMOKE_ENVS_PER_GPU:-64}"; iterations="${SMOKE_ITERATIONS:-5}"
+      robot_dir="${SMOKE_ROBOT_MOTION_DIR:-$ROBOT_MOTION_DIR}"
+      smpl_dir="${SMOKE_SMPL_MOTION_DIR:-$SMPL_MOTION_DIR}"
+      ;;
+    train)
+      envs="${TRAIN_ENVS_PER_GPU:-4096}"; iterations="${TRAIN_ITERATIONS:-100000}"
+      robot_dir="$ROBOT_MOTION_DIR"; smpl_dir="$SMPL_MOTION_DIR"
+      ;;
+    *) echo "Unknown single-node mode: $mode" >&2; exit 2 ;;
+  esac
+  verify_code
+  echo "Starting single-node training on $node with 8 processes."
+  remote_single_start "$node" "$run_id" "$envs" "$iterations" \
+    "$robot_dir" "$smpl_dir" "manager/universal_token/all_modes/sonic_bumi3"
+  echo "Started single-node $mode: node=$node, run=$run_id, envs/GPU=$envs, world=8, iterations=$iterations"
 }
 
 launch_ground_finetune() {
@@ -256,6 +310,41 @@ remote_node() {
   # 而 filtered 变体需要由配置文件提供 84 条台面动作清单，命令行硬编码空列表会压掉它。
 }
 
+remote_single_node() {
+  local rank="$1" run_id="$2" envs="$3" iterations="$4" robot_dir="$5" smpl_dir="$6"
+  local exp_name="${7:-manager/universal_token/all_modes/sonic_bumi3}"
+  local experiment_dir="$RUN_ROOT/$run_id"
+  [[ "$rank" == "0" ]] || { echo "Single-node MACHINE_RANK must be 0" >&2; exit 2; }
+  cd "$REMOTE_REPO"
+  [[ -x "$REMOTE_PYTHON" ]] || { echo "Python missing: $REMOTE_PYTHON" >&2; exit 1; }
+  [[ "${OMNI_KIT_ACCEPT_EULA:-NO}" == "YES" ]] || {
+    echo "NVIDIA Omniverse EULA has not been explicitly accepted" >&2
+    exit 1
+  }
+  [[ -d "$robot_dir" ]] || { echo "Robot data missing: $robot_dir" >&2; exit 1; }
+  [[ -d "$smpl_dir" ]] || { echo "SMPL data missing: $smpl_dir" >&2; exit 1; }
+  export TMPDIR="${ISAACLAB_TMPDIR:-$RUN_ROOT/.tmp/$USER/single}"
+  mkdir -p "$TMPDIR"
+  export NCCL_SOCKET_IFNAME OMNI_KIT_ACCEPT_EULA
+  if [[ -n "${SITE_LIBRARY_DIR:-}" ]]; then
+    export LD_LIBRARY_PATH="$SITE_LIBRARY_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  fi
+  export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
+  export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
+  if [[ -n "$NCCL_IB_HCA" ]]; then export NCCL_IB_HCA; fi
+  exec "$REMOTE_PYTHON" -m accelerate.commands.launch \
+    --multi_gpu --num_machines=1 --num_processes=8 \
+    --machine_rank=0 \
+    --main_process_ip=127.0.0.1 --main_process_port="$SINGLE_NODE_MASTER_PORT" \
+    gear_sonic/train_agent_trl.py \
+    "+exp=$exp_name" \
+    +resume=false checkpoint=null auto_load_latest=false use_wandb=false headless=True \
+    "experiment_dir=$experiment_dir" "num_envs=$envs" \
+    "++algo.config.num_learning_iterations=$iterations" \
+    "++manager_env.commands.motion.motion_lib_cfg.motion_file=$robot_dir" \
+    "++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=$smpl_dir"
+}
+
 remote_ground_node() {
   local rank="$1" run_id="$2" envs="$3" iterations="$4"
   local robot_dir="$5" smpl_dir="$6" checkpoint="$7"
@@ -295,14 +384,18 @@ remote_ground_node() {
 case "${1:-}" in
   status) load_config; status ;;
   training-status) [[ $# -eq 2 ]] || { usage; exit 2; }; load_config; training_status "$2" ;;
+  single-training-status) [[ $# -eq 3 ]] || { usage; exit 2; }; load_config; single_training_status "$2" "$3" ;;
   verify-code) load_config; verify_code "${2:-}" ;;
   launch-nccl) [[ $# -eq 2 ]] || { usage; exit 2; }; load_config; launch_nccl "$2" ;;
   launch-smoke) [[ $# -eq 2 ]] || { usage; exit 2; }; load_config; launch smoke "$2" ;;
+  launch-single-smoke) [[ $# -eq 3 ]] || { usage; exit 2; }; load_config; launch_single smoke "$2" "$3" ;;
   launch-smoke-filtered) [[ $# -eq 2 ]] || { usage; exit 2; }; load_config; launch smoke-filtered "$2" ;;
   launch-train) [[ $# -eq 2 ]] || { usage; exit 2; }; load_config; launch train "$2" ;;
+  launch-single-train) [[ $# -eq 3 ]] || { usage; exit 2; }; load_config; launch_single train "$2" "$3" ;;
   launch-train-filtered) [[ $# -eq 2 ]] || { usage; exit 2; }; load_config; launch train-filtered "$2" ;;
   launch-ground-finetune) [[ $# -eq 3 ]] || { usage; exit 2; }; load_config; launch_ground_finetune "$2" "$3" ;;
   remote-node) [[ $# -eq 8 ]] || { usage; exit 2; }; load_config; remote_node "$2" "$3" "$4" "$5" "$6" "$7" "$8" ;;
+  remote-single-node) [[ $# -eq 8 ]] || { usage; exit 2; }; load_config; remote_single_node "$2" "$3" "$4" "$5" "$6" "$7" "$8" ;;
   remote-ground-node) [[ $# -eq 8 ]] || { usage; exit 2; }; load_config; remote_ground_node "$2" "$3" "$4" "$5" "$6" "$7" "$8" ;;
   remote-nccl) [[ $# -eq 2 ]] || { usage; exit 2; }; load_config; remote_nccl "$2" ;;
   *) usage; exit 2 ;;
