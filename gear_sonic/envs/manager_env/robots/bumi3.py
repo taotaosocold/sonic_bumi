@@ -209,7 +209,7 @@ BUMI3_ISAACLAB_TO_MUJOCO_MAPPING = {
 
 BUMI3_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
-        fix_base=True,
+        fix_base=False,
         asset_path=f"{ASSET_DIR}/robot_description/urdf/bumi3/bumi3.urdf",
         # Isaac Lab otherwise writes generated USD files to machine-global
         # /tmp/IsaacLab.  Keep a persistent, per-rank cache that is writable on
@@ -235,7 +235,7 @@ BUMI3_CFG = ArticulationCfg(
             max_depenetration_velocity=1.0,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False,
+            enabled_self_collisions=True,
             solver_position_iteration_count=8,
             solver_velocity_iteration_count=4,
         ),
