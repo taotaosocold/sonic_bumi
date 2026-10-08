@@ -4603,3 +4603,33 @@ Hydra 会把整个文件内容放进嵌套包，`manager_env` 覆盖根本不会
 - 服务器 `/data/ouqin/analysis/scan_bumi3_reference_terrain.py` 是判据修正前的旧版本
   （净变化判据，会误杀 kneeling_stop），仓库内版本已修正；若需在服务器重跑扫描，
   应从仓库重新同步，勿直接使用该文件。
+
+## 2026-10-08：新增 MuJoCo 困难动作评测与筛选脚本
+
+### 1. 目标与范围
+
+在论文第一阶段训练后，使用 BUMI3 的 Robot 或 SMPL Encoder ONNX 策略对参考动作做 MuJoCo 闭环评测，找出策略在当前设置下较难完成的动作片段。工作分支为 `feature/bumi3-mujoco-challenge-eval`，起始 HEAD 为 `e1a1f0a95fe21b518b01123b15cac3f8434396f6`。
+
+本次只新增 `gear_sonic/scripts/evaluate_bumi3_challenging_motions.py` 并更新本记录；没有修改 `agent.md`、现有仿真/数据加载脚本、配置或测试文件。开发过程中工作区另出现 `gear_sonic/envs/manager_env/robots/bumi3.py` 的 URDF 路径修改；它与本项工作无关，本次未修改、暂存或纳入记录。
+
+### 2. 评测协议与结果
+
+- `--dataset` 同时接受动作文件夹或 version: 1 的 JSON/YAML 清单；目录递归扫描并按相对路径排序。`--encoder robot` 读取 Robot 动作并选择 `*_g1.onnx`，`--encoder smpl` 读取 SMPL 动作并选择 `*_smpl.onnx`。SMPL 文件夹优先按相同相对路径寻找相邻 `robot/` 配对；目录层级不同时，唯一同名文件也会自动配对。无配对时按现有 sim2sim 约定使用默认机器人姿态。单动作模式也支持 SMPL 与可选 `--robot-motion` 配对。
+- `--limit N` 限制最多读取 N 条源动作；不指定则评测全部。文件夹按路径字典序取前 N 条，清单按原有顺序取前 N 条；限制的是源动作数，每条长动作仍会拆成多个 10 秒片段。每个片段默认运行 5 次 MuJoCo rollout。完整播放且全程实际根高与参考根高的绝对误差不超过 `0.20 m`，该次记成功；成功率至少 `0.80` 标为 `mastered`，否则标为 `challenging`。
+- 每次 rollout 使用可复现种子，并从现有 `sonic_bumi3.yaml`、`base_com.yaml` 和 `level0_4.yaml` 读取训练侧参数：`waist_yaw_link` 质量比例 `[0.8, 1.2]`、质心偏移 x `±0.025 m` / y、z `±0.05 m`，以及每 `4–6 s` 对应配置范围的线速度和角速度扰动。
+- 未映射 Isaac Lab 的静/动摩擦随机化：MuJoCo 这里的滑动摩擦系数与训练侧两个摩擦参数没有一一对应关系，脚本不会把它伪装成等价扰动。
+- 输出 `rollouts.jsonl`、`summary.json`、`challenging_motions.yaml` 和 `challenging_clips/`。Robot 模式输出 Robot NPZ；SMPL 模式输出原始训练格式 SMPL NPZ，并在有配对动作时同时输出 Robot NPZ。困难动作清单可由现有 BUMI3 数据集加载器按相同 encoder 读取。若输出目录非空，脚本会拒绝覆盖。
+
+### 3. 验证结果
+
+- `.venv_sim/bin/python -m py_compile gear_sonic/scripts/evaluate_bumi3_challenging_motions.py`：通过。
+- 新脚本 `--help` 与 `--self-test`：通过；自检覆盖 10 秒切片、80% 分类边界及随机种子稳定性。
+- MuJoCo 3.15.0 合成静态动作闭环：通过；检查质量/质心扰动、速度推力和根高终止逻辑。连续三次 rollout 也通过，随机质量比例分别为 `1.0267`、`1.1986`、`0.8558`。
+- 用户示例 `kneeling/robot` 与 `kneeling/smpl` 文件夹扫描：通过；两个目录各 3 条，`--limit 1/2` 分别只加载 1/2 条，SMPL 同相对路径 Robot 配对成功。另验证 `original_split_5217_seen_by_current_run/{robot,smpl}` 各 5,217 条；按字典序取前 10 条均成功加载，SMPL 的 10 条均通过唯一同名文件配对到 Robot。
+- 合成 SMPL encoder 端到端 smoke：通过；触发 challenging 后写出 SMPL 与 Robot NPZ，生成的清单由现有 `load_motion_dataset(encoder="smpl")` 成功回读。
+- 合成困难动作端到端 smoke：通过；用 `ZeroPolicy` 替身触发失败分类，生成 NPZ 和清单，再由现有 `load_motion_dataset()` 成功读回。该 smoke 验证了脚本控制流和文件格式，不代表真实 ONNX 策略效果。
+- 当前 `.venv_sim` 未安装 `pytest`，因此没有运行仓库 pytest 回归集；仓库中没有找到适配 BUMI3 Robot/SMPL Encoder 的 `*_g1.onnx` / `*_smpl.onnx`，因此尚未对真实策略或完整动作库做评测。实际筛选需提供与所选 encoder 对应的训练 ONNX、动作文件夹或数据集清单及空输出目录。
+
+### 4. 回滚方式与适用边界
+
+删除 `gear_sonic/scripts/evaluate_bumi3_challenging_motions.py` 并移除本节即可撤销本次变更。该筛选结果只表示指定 ONNX 策略在当前 MuJoCo 模型、初始化和扰动范围下的跟踪难度；它不等价于认定参考动作本身不合理，也不会自动修改训练数据或训练配置。
