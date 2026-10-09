@@ -4615,7 +4615,7 @@ Hydra 会把整个文件内容放进嵌套包，`manager_env` 覆盖根本不会
 ### 2. 评测协议与结果
 
 - `--dataset` 同时接受动作文件夹或 version: 1 的 JSON/YAML 清单；目录递归扫描并按相对路径排序。`--encoder robot` 读取 Robot 动作并选择 `*_g1.onnx`，`--encoder smpl` 读取 SMPL 动作并选择 `*_smpl.onnx`。SMPL 文件夹优先按相同相对路径寻找相邻 `robot/` 配对；目录层级不同时，唯一同名文件也会自动配对。无配对时按现有 sim2sim 约定使用默认机器人姿态。单动作模式也支持 SMPL 与可选 `--robot-motion` 配对。
-- `--limit N` 限制最多读取 N 条源动作；不指定则评测全部。文件夹按路径字典序取前 N 条，清单按原有顺序取前 N 条；限制的是源动作数，每条长动作仍会拆成多个 10 秒片段。每个片段默认运行 5 次 MuJoCo rollout。完整播放且全程实际根高与参考根高的绝对误差不超过 `0.20 m`，该次记成功；成功率至少 `0.80` 标为 `mastered`，否则标为 `challenging`。
+- `--limit N` 限制最多读取 N 条源动作；不指定则评测全部。文件夹按路径字典序取前 N 条，清单按原有顺序取前 N 条；限制的是源动作数，每条长动作仍会拆成多个 10 秒片段。每个片段默认运行 5 次 MuJoCo rollout。初版默认根高误差阈值为 `0.20 m`（2026-10-08 已调整为 `0.12 m`，见文末）；完整播放且全程误差不超过阈值，该次记成功；成功率至少 `0.80` 标为 `mastered`，否则标为 `challenging`。
 - 每次 rollout 使用可复现种子，并从现有 `sonic_bumi3.yaml`、`base_com.yaml` 和 `level0_4.yaml` 读取训练侧参数：`waist_yaw_link` 质量比例 `[0.8, 1.2]`、质心偏移 x `±0.025 m` / y、z `±0.05 m`，以及每 `4–6 s` 对应配置范围的线速度和角速度扰动。
 - 未映射 Isaac Lab 的静/动摩擦随机化：MuJoCo 这里的滑动摩擦系数与训练侧两个摩擦参数没有一一对应关系，脚本不会把它伪装成等价扰动。
 - 输出 `rollouts.jsonl`、`summary.json`、`challenging_motions.yaml` 和 `challenging_clips/`。Robot 模式输出 Robot NPZ；SMPL 模式输出原始训练格式 SMPL NPZ，并在有配对动作时同时输出 Robot NPZ。困难动作清单可由现有 BUMI3 数据集加载器按相同 encoder 读取。若输出目录非空，脚本会拒绝覆盖。
@@ -4633,3 +4633,14 @@ Hydra 会把整个文件内容放进嵌套包，`manager_env` 覆盖根本不会
 ### 4. 回滚方式与适用边界
 
 删除 `gear_sonic/scripts/evaluate_bumi3_challenging_motions.py` 并移除本节即可撤销本次变更。该筛选结果只表示指定 ONNX 策略在当前 MuJoCo 模型、初始化和扰动范围下的跟踪难度；它不等价于认定参考动作本身不合理，也不会自动修改训练数据或训练配置。
+
+## 2026-10-08：MuJoCo 评测根高误差阈值调整
+
+- 将 `evaluate_bumi3_challenging_motions.py` 的 `height_error_threshold` 默认值从 `0.20 m` 调整为 `0.12 m`，与 BUMI3 训练普通姿态下的根高误差终止阈值一致；命令行仍可通过 `--height-error-threshold` 覆盖。
+- 训练配置对参考根高低于 `0.40 m` 的低姿态采用 `0.25 m` 误差阈值；MuJoCo 评测当前固定使用 `0.12 m`，所以低姿态片段也按 `0.12 m` 判定。
+- 得到的结论：首先部分基本的走或者跳的已经没问题了，目前仍然还有部分运动序列是不符合物理逻辑的，然后单脚站立的动作还是不行，坐下来的动作也不行，以及部分第一帧就穿模的运动序列在mujoco可视化会弹飞起来。
+
+## 2026-10-09：训练时保留最佳奖励与最长 episode 模型
+
+- 扩展 `ModelSaveCallback`：在现有定期 checkpoint 节点（默认每 2,000 步）比较 `objective/rewards` 与 `objective/length`。任一指标超过历史最佳值时，将该步的完整训练 checkpoint 原子覆盖到 `best_reward.pt` 或 `best_length.pt`；原有 `model_step_*.pt` 与 `last.pt` 保存规则不变。
+- 这里的奖励和长度使用训练日志统计值，即最近最多 100 个已完成 episode 的平均累计奖励和平均长度，不是单个 episode 的最大值。最佳值在当前训练进程中比较。

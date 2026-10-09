@@ -94,8 +94,8 @@ class Args:
     mastered_success_rate: float = 0.8
     """成功率达到该值即记为 mastered；低于该值记为 challenging。"""
 
-    height_error_threshold: float = 0.2
-    """实际根高与参考根高的最大允许误差，单位米。"""
+    height_error_threshold: float = 0.12
+    """实际根高与参考根高的最大允许误差，单位米；默认与 BUMI3 普通姿态训练阈值一致。"""
 
     clip_seconds: float = 10.0
     """动作切片长度；论文第一阶段采用 10 秒片段。"""

@@ -29,6 +29,8 @@ class ModelSaveCallback(TrainerCallback):
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.save_last_only = False
         self.max_disk_usage = max_disk_usage
+        self.best_reward = float("-inf")
+        self.best_length = float("-inf")
 
     def check_disk_usage(self):
         """Check if current working directory has more than 0.9TB of usage."""
@@ -87,6 +89,30 @@ class ModelSaveCallback(TrainerCallback):
                     f"{self.save_dir}/last.pt",
                 )
                 # self.export_policy_to_onnx(env, state, model)
+
+            if state.global_step % self.save_frequency == 0 and state.log_history:
+                metrics = state.log_history[-1]
+                checkpoint_path = self.save_dir / f"model_step_{state.global_step:06d}.pt"
+                if not checkpoint_path.is_file():
+                    checkpoint_path = self.save_dir / "last.pt"
+                if metrics.get("step") == state.global_step and checkpoint_path.is_file():
+                    for name, key in (
+                        ("reward", "objective/rewards"),
+                        ("length", "objective/length"),
+                    ):
+                        try:
+                            value = float(metrics[key])
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                        if value > getattr(self, f"best_{name}"):
+                            best_path = self.save_dir / f"best_{name}.pt"
+                            temp_path = best_path.with_suffix(".pt.tmp")
+                            shutil.copy2(checkpoint_path, temp_path)
+                            os.replace(temp_path, best_path)
+                            setattr(self, f"best_{name}", value)
+                            logger.info(
+                                f"Updated best_{name}.pt at step {state.global_step}: {value:.6f}"
+                            )
 
     def get_example_obs(self, env):
         obs_dict = copy.deepcopy(env.obs_buf_dict)
