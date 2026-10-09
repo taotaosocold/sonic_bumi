@@ -2083,6 +2083,7 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
 
             with common.Timer("sync_adaptive_sampling"):
                 self.sync_adaptive_sampling()
+            self.print_hardest_adaptive_sampling_motions(self.state.global_step + 1)
 
             # print(self.accelerator.process_index, self.model.module.policy.running_mean_std.running_mean.mean(), self.model.module.policy.running_mean_std.running_var.mean(), self.model.module.policy.running_mean_std.count)  # noqa: E501
             # print(self.accelerator.process_index, self.policy_model.running_mean_std.running_mean)
@@ -2255,6 +2256,73 @@ class TRLPPOTrainer(PPOTrainer):  # noqa: F405
         if hasattr(self.env, "sync_and_compute_adaptive_sampling"):
             self.env.sync_and_compute_adaptive_sampling(
                 self.accelerator, sync_across_gpus=sync_across_gpus
+            )
+
+    def print_hardest_adaptive_sampling_motions(
+        self, iteration: int, frequency: int = 100, top_k: int = 100
+    ):
+        """每隔固定迭代汇总各 GPU 的动作采样权重并打印最难动作。"""
+        if iteration <= 0 or iteration % frequency != 0:
+            return
+
+        get_snapshot = getattr(self.env, "get_adaptive_sampling_motion_snapshot", None)
+        if get_snapshot is None:
+            return
+        snapshot = get_snapshot()
+        if snapshot is None:
+            return
+
+        motion_keys, local_stats = snapshot
+        gathered_stats = self.accelerator.gather(local_stats)
+        gathered_stats = gathered_stats.reshape(
+            self.accelerator.num_processes, *local_stats.shape
+        )
+        mean_stats = gathered_stats.mean(dim=0)
+
+        if not self.accelerator.is_main_process:
+            return
+        if len(motion_keys) != mean_stats.shape[1]:
+            raise RuntimeError(
+                "自适应采样动作名称与统计数量不一致："
+                f"names={len(motion_keys)}, stats={mean_stats.shape[1]}"
+            )
+
+        sampling_probs = mean_stats[0].detach().cpu().tolist()
+        evaluations = mean_stats[1].detach().cpu().tolist()
+        failures = mean_stats[2].detach().cpu().tolist()
+        if not motion_keys:
+            return
+
+        def difficulty_sort_key(motion_id):
+            eval_count = evaluations[motion_id]
+            failure_rate = failures[motion_id] / eval_count if eval_count > 0.0 else -1.0
+            return (
+                -sampling_probs[motion_id],
+                -failure_rate,
+                -eval_count,
+                motion_keys[motion_id],
+            )
+
+        ranked_ids = sorted(range(len(motion_keys)), key=difficulty_sort_key)[:top_k]
+        print(  # noqa: T201
+            f"\n[Adaptive sampling] iteration={iteration}",
+            flush=True,
+        )
+        print(  # noqa: T201
+            " rank | sample_prob | failure_rate | motion",
+            flush=True,
+        )
+        for rank, motion_id in enumerate(ranked_ids, start=1):
+            eval_count = evaluations[motion_id]
+            failure_count = failures[motion_id]
+            failure_rate = failure_count / eval_count if eval_count > 0.0 else None
+            failure_rate_text = (
+                f"{failure_rate * 100:11.2f}%" if failure_rate is not None else "        n/a"
+            )
+            print(  # noqa: T201
+                f"{rank:5d} | {sampling_probs[motion_id] * 100:10.4f}% | "
+                f"{failure_rate_text} | {motion_keys[motion_id]}",
+                flush=True,
             )
 
     def append_to_log_dict(self, log_dict):

@@ -1117,6 +1117,31 @@ class ManagerEnvWrapper:
                 accelerator, sync_across_gpus=sync_across_gpus
             )
 
+    def get_adaptive_sampling_motion_snapshot(self):
+        """返回逐动作采样概率与困难度统计，供训练器周期性汇总打印。"""
+        motion_lib = self._motion_lib
+        if motion_lib is None or not getattr(motion_lib, "use_adaptive_sampling", False):
+            return None
+
+        required_stats = (
+            "_sampling_prob",
+            "adp_samp_motion_num_evaluations",
+            "adp_samp_motion_num_failures",
+        )
+        if any(not hasattr(motion_lib, name) for name in required_stats):
+            return None
+
+        stats = torch.stack(
+            [
+                motion_lib._sampling_prob.float(),
+                motion_lib.adp_samp_motion_num_evaluations.float(),
+                motion_lib.adp_samp_motion_num_failures.float(),
+            ],
+            dim=0,
+        )
+        motion_keys = [str(key) for key in motion_lib._motion_data_keys.tolist()]
+        return motion_keys, stats
+
     def load_env_state_dict(self, state_dict):
         if "motion_lib" in state_dict:
             self._motion_lib.load_state_dict(state_dict["motion_lib"])
