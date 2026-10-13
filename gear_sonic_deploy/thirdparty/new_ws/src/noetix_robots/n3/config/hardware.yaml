@@ -1,0 +1,108 @@
+hardware:
+  diagnostic_read_only: false
+ethercat:
+  ifname: eno2
+  enable_dc: true
+  cycle_time_ns: 1000000
+canu_network:
+- name: body
+  ecat_id: 1
+  enable: true
+  imu:
+    name: imu_hip
+  channel_1:
+  - name: waist_yaw_joint
+    type: ACTR_8522
+    can_id: 1
+  channel_2:
+  - name: l_arm_pitch_joint
+    type: ACTR_5014
+    can_id: 1
+  - name: l_arm_roll_joint
+    type: ACTR_5014
+    can_id: 2
+  - name: l_arm_yaw_joint
+    type: ACTR_5014
+    can_id: 3
+  - name: l_elbow_pitch_joint
+    type: ACTR_5014
+    can_id: 4
+  - name: l_hand_yaw_joint
+    type: ACTR_4308
+    can_id: 5
+  - name: l_hand_pitch_joint
+    type: ACTR_4308
+    can_id: 6
+  - name: l_hand_roll_joint
+    type: ACTR_4308
+    can_id: 7
+  channel_3:
+  - name: l_hip_pitch_joint
+    type: ACTR_8522
+    can_id: 1
+  - name: l_hip_roll_joint
+    type: ACTR_8522
+    can_id: 2
+  - name: l_hip_yaw_joint
+    type: ACTR_8522
+    can_id: 3
+  - name: l_knee_pitch_joint
+    type: ACTR_8522
+    can_id: 4
+  - name: l_ankle_pitch_joint
+    type: ACTR_5014
+    can_id: 5
+  - name: l_ankle_roll_joint
+    type: ACTR_5014
+    can_id: 6
+- name: hip
+  ecat_id: 2
+  enable: true
+  channel_1:
+  - name: r_hip_pitch_joint
+    type: ACTR_8522
+    can_id: 1
+  - name: r_hip_roll_joint
+    type: ACTR_8522
+    can_id: 2
+  - name: r_hip_yaw_joint
+    type: ACTR_8522
+    can_id: 3
+  - name: r_knee_pitch_joint
+    type: ACTR_8522
+    can_id: 4
+  - name: r_ankle_pitch_joint
+    type: ACTR_5014
+    can_id: 5
+  - name: r_ankle_roll_joint
+    type: ACTR_5014
+    can_id: 6
+  channel_2:
+  - name: r_arm_pitch_joint
+    type: ACTR_5014
+    can_id: 1
+  - name: r_arm_roll_joint
+    type: ACTR_5014
+    can_id: 2
+  - name: r_arm_yaw_joint
+    type: ACTR_5014
+    can_id: 3
+  - name: r_elbow_pitch_joint
+    type: ACTR_5014
+    can_id: 4
+  - name: r_hand_yaw_joint
+    type: ACTR_4308
+    can_id: 5
+  - name: r_hand_pitch_joint
+    type: ACTR_4308
+    can_id: 6
+  - name: r_hand_roll_joint
+    type: ACTR_4308
+    can_id: 7
+  channel_3:
+  - name: head_pitch_joint
+    type: ACTR_4308
+    can_id: 1
+  - name: head_yaw_joint
+    type: ACTR_4308
+    can_id: 2

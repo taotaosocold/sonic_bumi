@@ -1,0 +1,40 @@
+simulation:
+  # Gazebo Classic physics is fixed by worlds/flat.world at 1 ms = 1000 Hz,
+  # matching the real Bumi EtherCAT loop.
+  state_publish_hz: 200.0
+
+  # The launch file computes the standing base height from the actual URDF,
+  # stand_joint_angles and foot collision spheres.  This is only the extra gap
+  # left below the feet while the virtual hoist is holding the robot.
+  spawn_clearance_m: 0.03
+
+  # Virtual hoist behaviour:
+  #   hold base_link at the spawn pose -> run real STAND -> release instantly.
+  # No slow lowering is performed.  After release Gazebo gravity owns the base.
+  hold_on_start: true
+  auto_stand: true
+  stand_settle_s: 0.50
+
+  # Initial joint pose before STAND.  Supported: lie, stand, zero.
+  initial_pose: lie
+
+  foot_links:
+    - l_ankle_roll_link
+    - r_ankle_roll_link
+
+  # Contact parameters for the existing foot support-sphere collisions.
+  # These are environment parameters rather than robot geometry and are kept
+  # here so they can be calibrated against the real floor without touching the
+  # real URDF.
+  foot_contact:
+    mu1: 0.9
+    mu2: 0.9
+    kp: 1000000.0
+    kd: 100.0
+    min_depth: 0.001
+    max_vel: 0.10
+
+  # Optional passive joint losses applied in addition to LowCmd PD effort.
+  # Keep zero until real step-response data is available for calibration.
+  joint_viscous_damping: 0.0
+  joint_coulomb_friction: 0.0

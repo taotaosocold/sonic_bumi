@@ -1,0 +1,8 @@
+joy:
+  enabled: true
+  topic: /joy
+  bindings:
+    - {name: disable, action: disable, button: 6}
+    - {name: stand,   action: stand,   button: 2}
+    - {name: lie,     action: lie,     button: 3}
+    - {name: enable,  action: enable,  button: 7}

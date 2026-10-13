@@ -1,0 +1,294 @@
+# Bumi4340 walking policy - 2026-09-09 model_17000.
+#
+# The ONNX policy was exported in a 29-DOF model space:
+#   command(3) + gyro(3) + projected_gravity(3)
+#   + q_rel(29) + dq(29) + last_action(29) = 96 values/frame
+#   5 history frames = 480 model inputs, 29 model actions.
+#
+# Bumi4340's deployed LowState/LowCmd remains the existing 21-DOF interface.
+# joints.control_model_names maps those physical joints into the 29-DOF model
+# space.  The model-only head/hand joints are held at their trained default
+# position with zero velocity/action in the synthesized observation.
+enabled: true
+order: 0
+name: bumi4340_walk
+robot: bumi4340
+policy_type: locomotion
+
+control:
+  # Training: sim.dt=0.005, decimation=4 => 50 Hz policy rate.
+  frequency_hz: 50.0
+
+model:
+  package: noetix_policy
+  file: policy/bumi4340/walkrun.onnx
+
+action:
+  type: joint_position_delta
+  output_name: actions
+  dimension: 29
+  # Effectively only protects against pathological numerical output; normal
+  # actor output is far below this limit.
+  clip: 18.0
+
+joints:
+  # Physical Bumi4340 LowState/LowCmd joint space.  Keep the current robot and
+  # hardware resources unchanged.
+  names:
+    - l_leg_pitch_joint
+    - r_leg_pitch_joint
+    - waist_yaw_joint
+    - l_leg_roll_joint
+    - r_leg_roll_joint
+    - l_arm_pitch_joint
+    - r_arm_pitch_joint
+    - l_leg_yaw_joint
+    - r_leg_yaw_joint
+    - l_arm_roll_joint
+    - r_arm_roll_joint
+    - l_knee_pitch_joint
+    - r_knee_pitch_joint
+    - l_arm_yaw_joint
+    - r_arm_yaw_joint
+    - l_ankle_pitch_joint
+    - r_ankle_pitch_joint
+    - l_elbow_pitch_joint
+    - r_elbow_pitch_joint
+    - l_ankle_roll_joint
+    - r_ankle_roll_joint
+
+  # Exact ONNX metadata joint order.  Observation/action vectors always use
+  # this order and therefore remain 29-DOF even on the 21-DOF Bumi4340.
+  model_names:
+    - l_hip_pitch_joint
+    - r_hip_pitch_joint
+    - waist_yaw_joint
+    - l_hip_roll_joint
+    - r_hip_roll_joint
+    - head_pitch_joint
+    - l_arm_pitch_joint
+    - r_arm_pitch_joint
+    - l_hip_yaw_joint
+    - r_hip_yaw_joint
+    - head_yaw_joint
+    - l_arm_roll_joint
+    - r_arm_roll_joint
+    - l_knee_pitch_joint
+    - r_knee_pitch_joint
+    - l_arm_yaw_joint
+    - r_arm_yaw_joint
+    - l_ankle_pitch_joint
+    - r_ankle_pitch_joint
+    - l_elbow_pitch_joint
+    - r_elbow_pitch_joint
+    - l_ankle_roll_joint
+    - r_ankle_roll_joint
+    - l_hand_yaw_joint
+    - r_hand_yaw_joint
+    - l_hand_pitch_joint
+    - r_hand_pitch_joint
+    - l_hand_roll_joint
+    - r_hand_roll_joint
+
+  # Positional mapping from each physical joints.names entry to its model slot.
+  control_model_names:
+    - l_hip_pitch_joint
+    - r_hip_pitch_joint
+    - waist_yaw_joint
+    - l_hip_roll_joint
+    - r_hip_roll_joint
+    - l_arm_pitch_joint
+    - r_arm_pitch_joint
+    - l_hip_yaw_joint
+    - r_hip_yaw_joint
+    - l_arm_roll_joint
+    - r_arm_roll_joint
+    - l_knee_pitch_joint
+    - r_knee_pitch_joint
+    - l_arm_yaw_joint
+    - r_arm_yaw_joint
+    - l_ankle_pitch_joint
+    - r_ankle_pitch_joint
+    - l_elbow_pitch_joint
+    - r_elbow_pitch_joint
+    - l_ankle_roll_joint
+    - r_ankle_roll_joint
+
+  # head/hand model joints do not exist in the current Bumi4340 hardware API.
+  # Their q_rel/dq/last_action observations are synthesized as 0 around the
+  # trained default pose.
+  virtual_joint_mode: fixed_default
+
+inputs:
+  - name: obs
+    frame_size: 96
+    # Training policy observations have no deployment-side clipping.  Use a
+    # very large bound to preserve the runtime's finite-value clipping path
+    # without changing normal observations.
+    clip: 1000000000.0
+    model_input_size: 480
+    history:
+      stack_size: 5
+    terms:
+      - type: command
+        dim: 3
+        # Training command ranges: vx [-1.0, 1.5], vy [-1.0, 1.0], wz [-1.0, 1.0].
+        min_x: -1.0
+      - type: base_angular_velocity
+        dim: 3
+      - type: projected_gravity
+        dim: 3
+      - type: joint_position_relative
+        dim: 29
+      - type: joint_velocity
+        dim: 29
+      - type: last_action
+        dim: 29
+
+runtime:
+  # Exact model metadata, in joints.model_names order.
+  action_scale:
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+    - 0.250
+
+  default_position:
+    - -0.149
+    - -0.149
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.300
+    - -0.300
+    - 0.322
+    - 0.322
+    - 0.000
+    - 0.000
+    - -0.172
+    - -0.172
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+
+  kp:
+    - 200.0
+    - 200.0
+    - 200.0
+    - 200.0
+    - 200.0
+    - 20.0
+    - 50.0
+    - 50.0
+    - 200.0
+    - 200.0
+    - 20.0
+    - 50.0
+    - 50.0
+    - 200.0
+    - 200.0
+    - 50.0
+    - 50.0
+    - 50.0
+    - 50.0
+    - 50.0
+    - 50.0
+    - 50.0
+    - 50.0
+    - 20.0
+    - 20.0
+    - 20.0
+    - 20.0
+    - 20.0
+    - 20.0
+
+  kd:
+    - 15.0
+    - 15.0
+    - 15.0
+    - 15.0
+    - 15.0
+    - 3.0
+    - 5.0
+    - 5.0
+    - 15.0
+    - 15.0
+    - 3.0
+    - 5.0
+    - 5.0
+    - 15.0
+    - 15.0
+    - 5.0
+    - 5.0
+    - 4.0
+    - 4.0
+    - 5.0
+    - 5.0
+    - 4.0
+    - 4.0
+    - 3.0
+    - 3.0
+    - 3.0
+    - 3.0
+    - 3.0
+    - 3.0
+
+  max_position_delta: null
+  history_init: repeat
+
+  command:
+    # Keep the existing gamepad axes, but map them into the command ranges used
+    # by this training run.  min_x in the observation term caps full reverse at
+    # -1.0 while full forward reaches +1.5.
+    axes: {x: 1, y: 0, yaw: 3}
+    signs: {x: 1.0, y: 1.0, yaw: 1.0}
+    limits: {x: 1.5, y: 1.0, yaw: 1.0}
+
+motion:
+  required: false
+
+safety:
+  fall_protection_enabled: true
+  projected_gravity_z_max: -0.3
+
+lifecycle:
+  on_complete: stand
+  on_failure: stand

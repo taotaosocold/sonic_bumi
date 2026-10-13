@@ -1,0 +1,237 @@
+# Bumi3 legacy-compatible walk policy.
+# This contract mirrors the old rl_controllers/policy/bumi/walk.yaml.
+enabled: true
+order: 0
+name: bumi3_walk
+robot: bumi3
+policy_type: locomotion
+
+control:
+  frequency_hz: 50.0
+
+model:
+  package: noetix_policy
+  file: policy/bumi3/walkrun.onnx
+
+action:
+  type: joint_position_delta
+  output_name: actions
+  dimension: 21
+  clip: 18.0
+
+# Keep the exact joint labels/order used by the old Bumi policy contract.
+# model_names preserves the ONNX metadata names in the same index order.
+joints:
+  names:
+    - leg_l1_joint
+    - leg_r1_joint
+    - waist_1_joint
+    - leg_l2_joint
+    - leg_r2_joint
+    - arm_l1_joint
+    - arm_r1_joint
+    - leg_l3_joint
+    - leg_r3_joint
+    - arm_l2_joint
+    - arm_r2_joint
+    - leg_l4_joint
+    - leg_r4_joint
+    - arm_l3_joint
+    - arm_r3_joint
+    - leg_l5_joint
+    - leg_r5_joint
+    - arm_l4_joint
+    - arm_r4_joint
+    - leg_l6_joint
+    - leg_r6_joint
+  model_names:
+    - l_leg_pitch_joint
+    - r_leg_pitch_joint
+    - waist_yaw_joint
+    - l_leg_roll_joint
+    - r_leg_roll_joint
+    - l_arm_pitch_joint
+    - r_arm_pitch_joint
+    - l_leg_yaw_joint
+    - r_leg_yaw_joint
+    - l_arm_roll_joint
+    - r_arm_roll_joint
+    - l_knee_pitch_joint
+    - r_knee_pitch_joint
+    - l_arm_yaw_joint
+    - r_arm_yaw_joint
+    - l_ankle_pitch_joint
+    - r_ankle_pitch_joint
+    - l_elbow_pitch_joint
+    - r_elbow_pitch_joint
+    - l_ankle_roll_joint
+    - r_ankle_roll_joint
+
+inputs:
+  - name: obs
+    frame_size: 72
+    clip: 18.0
+    model_input_size: 360
+    history:
+      stack_size: 5
+    terms:
+      - type: command
+        dim: 3
+        deadzone: 0.3
+        min_x: -0.5
+        lateral_exclusive: true
+      - type: base_angular_velocity
+        dim: 3
+      - type: projected_gravity
+        dim: 3
+      - type: joint_position_relative
+        dim: 21
+      - type: joint_velocity
+        dim: 21
+      - type: last_action
+        dim: 21
+
+# These values are the metadata embedded in the old walkrun.onnx.
+runtime:
+  action_scale:
+    - 0.250
+    - 0.250
+    - 0.127
+    - 0.112
+    - 0.112
+    - 0.115
+    - 0.115
+    - 0.112
+    - 0.112
+    - 0.115
+    - 0.115
+    - 0.333
+    - 0.333
+    - 0.115
+    - 0.115
+    - 0.250
+    - 0.250
+    - 0.115
+    - 0.115
+    - 0.250
+    - 0.250
+
+  default_position:
+    - -0.149
+    - -0.149
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.300
+    - -0.300
+    - 0.322
+    - 0.322
+    - 0.000
+    - 0.000
+    - -0.172
+    - -0.172
+    - 0.000
+    - 0.000
+    - 0.000
+    - 0.000
+
+  kp:
+    - 60.0
+    - 60.0
+    - 53.0
+    - 60.0
+    - 60.0
+    - 12.0
+    - 12.0
+    - 60.0
+    - 60.0
+    - 12.0
+    - 12.0
+    - 45.0
+    - 45.0
+    - 12.0
+    - 12.0
+    - 10.0
+    - 10.0
+    - 12.0
+    - 12.0
+    - 10.0
+    - 10.0
+
+  kd:
+    - 3.0
+    - 3.0
+    - 3.4
+    - 3.0
+    - 3.0
+    - 0.4
+    - 0.4
+    - 2.5
+    - 2.5
+    - 0.4
+    - 0.4
+    - 2.0
+    - 2.0
+    - 0.4
+    - 0.4
+    - 0.5
+    - 0.5
+    - 0.4
+    - 0.4
+    - 0.5
+    - 0.5
+
+  max_position_delta: null
+  history_init: repeat
+
+  # The legacy controller only entered WALK from STAND. Recreate that entry
+  # condition here so Bumi3 does not jump from LIN q=0 straight into policy.
+  entry_pose:
+    enabled: true
+    duration_s: 2.0
+    position:
+      - -0.1495
+      - -0.1495
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.2618
+      - -0.2618
+      - 0.3215
+      - 0.3215
+      - 0.0
+      - 0.0
+      - -0.172
+      - -0.172
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+    kp: 10.0
+    kd: 0.5
+
+  # Old Bumi joy_teleop -> /cmd_vel contract.
+  command:
+    axes: {x: 1, y: 0, yaw: 3}
+    signs: {x: 1.0, y: 1.0, yaw: 1.0}
+    limits: {x: 2.0, y: 0.5, yaw: 1.5}
+
+motion:
+  required: false
+
+safety:
+  fall_protection_enabled: true
+  projected_gravity_z_max: -0.3
+  on_trigger: default
+
+lifecycle:
+  on_complete: stand
+  on_failure: stand

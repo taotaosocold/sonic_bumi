@@ -1,0 +1,1 @@
+add_subdirectory(bumi3_deploy_onnx_ref)

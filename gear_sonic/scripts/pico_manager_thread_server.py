@@ -894,6 +894,7 @@ def _pose_stream_common(
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
     reader=None,
+    smpl_only: bool = False,
 ):
     """Shared pose streaming loop used by run_pico."""
     if reader is None:
@@ -907,7 +908,7 @@ def _pose_stream_common(
         reader.start()
 
     # Create 3-point pose processor with visualization settings
-    three_point = ThreePointPose(
+    three_point = None if smpl_only else ThreePointPose(
         enable_vis_vr3pt=enable_vis_vr3pt,
         with_g1_robot=with_g1_robot,
         enable_waist_tracking=enable_waist_tracking,
@@ -925,6 +926,7 @@ def _pose_stream_common(
         record_dir=record_dir,
         record_format=record_format,
         log_prefix=log_prefix,
+        smpl_only=smpl_only,
     )
 
     if stop_event is None:
@@ -938,7 +940,8 @@ def _pose_stream_common(
     finally:
         # Cleanup resources
         reader.stop()
-        three_point.close()
+        if three_point is not None:
+            three_point.close()
 
 
 class ThreePointPose:
@@ -1251,6 +1254,7 @@ class PoseStreamer:
         record_dir: str,
         record_format: str,
         log_prefix: str = "PoseLoop",
+        smpl_only: bool = False,
     ):
         self.socket = socket
         self.reader = reader
@@ -1258,6 +1262,7 @@ class PoseStreamer:
         self.target_fps = target_fps
         self.record_dir = record_dir
         self.log_prefix = log_prefix
+        self.smpl_only = smpl_only
 
         # Injected dependencies
         self.reader = reader
@@ -1271,7 +1276,9 @@ class PoseStreamer:
             os.makedirs(record_dir, exist_ok=True)
         self.record_idx = 0
 
-        self.left_hand_ik_solver, self.right_hand_ik_solver = init_hand_ik_solvers()
+        self.left_hand_ik_solver, self.right_hand_ik_solver = (
+            (None, None) if smpl_only else init_hand_ik_solvers()
+        )
         self.parent_indices = [
             -1,
             0,
@@ -1368,14 +1375,15 @@ class PoseStreamer:
         self.toggle_data_collection_last = toggle_data_collection_tmp
         self.toggle_data_abort_last = toggle_data_abort_tmp
 
-        left_hand_joints, right_hand_joints = compute_hand_joints_from_inputs(
-            self.left_hand_ik_solver,
-            self.right_hand_ik_solver,
-            left_trigger,
-            left_grip,
-            right_trigger,
-            right_grip,
-        )
+        if not self.smpl_only:
+            left_hand_joints, right_hand_joints = compute_hand_joints_from_inputs(
+                self.left_hand_ik_solver,
+                self.right_hand_ik_solver,
+                left_trigger,
+                left_grip,
+                right_trigger,
+                right_grip,
+            )
         smpl_pose_np = (
             latest_data["smpl_pose"].detach().cpu().numpy()[:, :63].reshape(-1, 21, 3)[0]
         ).astype(np.float32)
@@ -1417,83 +1425,85 @@ class PoseStreamer:
         )
         N = len(self.frame_buffer["frame_index"])
 
-        ##### From @Jiefeng for directly setting the joint position ######
-        joint_pos = np.zeros(29)
-        body_pose = use_pose.reshape(-1, 21, 3)
+        if not self.smpl_only:
+            ##### From @Jiefeng for directly setting the joint position ######
+            joint_pos = np.zeros(29)
+            body_pose = use_pose.reshape(-1, 21, 3)
 
-        SMPL_L_ELBOW_IDX = 17
-        SMPL_L_WRIST_IDX = 19
-        SMPL_R_ELBOW_IDX = 18
-        SMPL_R_WRIST_IDX = 20
+            SMPL_L_ELBOW_IDX = 17
+            SMPL_L_WRIST_IDX = 19
+            SMPL_R_ELBOW_IDX = 18
+            SMPL_R_WRIST_IDX = 20
 
-        # G1_L_ELBOW_IDX = 0
-        G1_L_WRIST_ROLL_IDX = 23
-        G1_L_WRIST_PITCH_IDX = 25
-        G1_L_WRIST_YAW_IDX = 27
+            # G1_L_ELBOW_IDX = 0
+            G1_L_WRIST_ROLL_IDX = 23
+            G1_L_WRIST_PITCH_IDX = 25
+            G1_L_WRIST_YAW_IDX = 27
 
-        # G1_R_ELBOW_IDX = 0
-        G1_R_WRIST_ROLL_IDX = 24  # Done
-        G1_R_WRIST_PITCH_IDX = 26
-        G1_R_WRIST_YAW_IDX = 28
-        smpl_l_elbow_aa = body_pose[:, SMPL_L_ELBOW_IDX]
-        smpl_l_wrist_aa = body_pose[:, SMPL_L_WRIST_IDX]
-        smpl_r_elbow_aa = body_pose[:, SMPL_R_ELBOW_IDX]
-        smpl_r_wrist_aa = body_pose[:, SMPL_R_WRIST_IDX]
+            # G1_R_ELBOW_IDX = 0
+            G1_R_WRIST_ROLL_IDX = 24  # Done
+            G1_R_WRIST_PITCH_IDX = 26
+            G1_R_WRIST_YAW_IDX = 28
+            smpl_l_elbow_aa = body_pose[:, SMPL_L_ELBOW_IDX]
+            smpl_l_wrist_aa = body_pose[:, SMPL_L_WRIST_IDX]
+            smpl_r_elbow_aa = body_pose[:, SMPL_R_ELBOW_IDX]
+            smpl_r_wrist_aa = body_pose[:, SMPL_R_WRIST_IDX]
 
-        g1_l_elbow_axis = np.array([0, 1, 0])
-        g1_l_elbow_q_twist, g1_l_elbow_q_swing = decompose_rotation_aa(
-            smpl_l_elbow_aa, g1_l_elbow_axis
-        )
+            g1_l_elbow_axis = np.array([0, 1, 0])
+            g1_l_elbow_q_twist, g1_l_elbow_q_swing = decompose_rotation_aa(
+                smpl_l_elbow_aa, g1_l_elbow_axis
+            )
 
-        g1_r_elbow_axis = np.array([0, 1, 0])
-        g1_r_elbow_q_twist, g1_r_elbow_q_swing = decompose_rotation_aa(
-            smpl_r_elbow_aa, g1_r_elbow_axis
-        )
+            g1_r_elbow_axis = np.array([0, 1, 0])
+            g1_r_elbow_q_twist, g1_r_elbow_q_swing = decompose_rotation_aa(
+                smpl_r_elbow_aa, g1_r_elbow_axis
+            )
 
-        # Move elbow roll/yaw into wrist while preserving wrist pitch from SMPL
-        l_elbow_swing_euler = R.from_quat(g1_l_elbow_q_swing[:, [1, 2, 3, 0]]).as_euler(
-            "XYZ", degrees=False
-        )
-        r_elbow_swing_euler = R.from_quat(g1_r_elbow_q_swing[:, [1, 2, 3, 0]]).as_euler(
-            "XYZ", degrees=False
-        )
+            # Move elbow roll/yaw into wrist while preserving wrist pitch from SMPL
+            l_elbow_swing_euler = R.from_quat(g1_l_elbow_q_swing[:, [1, 2, 3, 0]]).as_euler(
+                "XYZ", degrees=False
+            )
+            r_elbow_swing_euler = R.from_quat(g1_r_elbow_q_swing[:, [1, 2, 3, 0]]).as_euler(
+                "XYZ", degrees=False
+            )
 
-        l_wrist_euler = R.from_rotvec(smpl_l_wrist_aa).as_euler("XYZ", degrees=False)
-        r_wrist_euler = R.from_rotvec(smpl_r_wrist_aa).as_euler("XYZ", degrees=False)
+            l_wrist_euler = R.from_rotvec(smpl_l_wrist_aa).as_euler("XYZ", degrees=False)
+            r_wrist_euler = R.from_rotvec(smpl_r_wrist_aa).as_euler("XYZ", degrees=False)
 
-        g1_l_wrist_roll = l_elbow_swing_euler[:, 0] + l_wrist_euler[:, 0]
-        g1_l_wrist_pitch = -l_wrist_euler[:, 1]
-        g1_l_wrist_yaw = l_elbow_swing_euler[:, 2] + l_wrist_euler[:, 2]
+            g1_l_wrist_roll = l_elbow_swing_euler[:, 0] + l_wrist_euler[:, 0]
+            g1_l_wrist_pitch = -l_wrist_euler[:, 1]
+            g1_l_wrist_yaw = l_elbow_swing_euler[:, 2] + l_wrist_euler[:, 2]
 
-        g1_r_wrist_roll = -(r_elbow_swing_euler[:, 0] + r_wrist_euler[:, 0])
-        g1_r_wrist_pitch = -r_wrist_euler[:, 1]
-        g1_r_wrist_yaw = r_elbow_swing_euler[:, 2] + r_wrist_euler[:, 2]
+            g1_r_wrist_roll = -(r_elbow_swing_euler[:, 0] + r_wrist_euler[:, 0])
+            g1_r_wrist_pitch = -r_wrist_euler[:, 1]
+            g1_r_wrist_yaw = r_elbow_swing_euler[:, 2] + r_wrist_euler[:, 2]
 
-        joint_pos[G1_L_WRIST_ROLL_IDX] = g1_l_wrist_roll[0]
-        joint_pos[G1_L_WRIST_PITCH_IDX] = -g1_l_wrist_pitch[0]
-        joint_pos[G1_L_WRIST_YAW_IDX] = g1_l_wrist_yaw[0]
+            joint_pos[G1_L_WRIST_ROLL_IDX] = g1_l_wrist_roll[0]
+            joint_pos[G1_L_WRIST_PITCH_IDX] = -g1_l_wrist_pitch[0]
+            joint_pos[G1_L_WRIST_YAW_IDX] = g1_l_wrist_yaw[0]
 
-        joint_pos[G1_R_WRIST_ROLL_IDX] = g1_r_wrist_roll[0]
-        joint_pos[G1_R_WRIST_PITCH_IDX] = g1_r_wrist_pitch[0]
-        joint_pos[G1_R_WRIST_YAW_IDX] = g1_r_wrist_yaw[0]
+            joint_pos[G1_R_WRIST_ROLL_IDX] = g1_r_wrist_roll[0]
+            joint_pos[G1_R_WRIST_PITCH_IDX] = g1_r_wrist_pitch[0]
+            joint_pos[G1_R_WRIST_YAW_IDX] = g1_r_wrist_yaw[0]
 
-        # Process SMPL pose to get calibrated 3-point VR pose and update visualization
-        # Pass SMPL local joints for optional body visualization in the VR3Pt viewer
-        smpl_joints_for_vis = (
-            latest_data["smpl_joints_local"].detach().cpu().numpy()[0]
-            if self.three_point.enable_smpl_vis
-            else None
-        )
-        vr_3pt_pose = self.three_point.process_smpl_pose(
-            sample["body_poses_np"], smpl_joints_local=smpl_joints_for_vis
-        )
-        ##### From @Jiefeng for directly setting the joint position ######
+            # Process SMPL pose to get calibrated 3-point VR pose and update visualization
+            # Pass SMPL local joints for optional body visualization in the VR3Pt viewer
+            smpl_joints_for_vis = (
+                latest_data["smpl_joints_local"].detach().cpu().numpy()[0]
+                if self.three_point.enable_smpl_vis
+                else None
+            )
+            vr_3pt_pose = self.three_point.process_smpl_pose(
+                sample["body_poses_np"], smpl_joints_local=smpl_joints_for_vis
+            )
+            ##### From @Jiefeng for directly setting the joint position ######
 
         self.frame_buffer["smpl_pose"].append(use_pose)
         self.frame_buffer["smpl_joints"].append(use_joints)
         self.frame_buffer["body_quat_w"].append(use_body_quat)
         self.frame_buffer["frame_index"].append(int(self.step))
-        self.frame_buffer["joint_pos"].append(joint_pos)
+        if not self.smpl_only:
+            self.frame_buffer["joint_pos"].append(joint_pos)
         pico_dt = float(sample.get("dt", 0.0))
         pico_fps = float(sample.get("fps", 0.0))
         N = len(self.frame_buffer["frame_index"])
@@ -1510,35 +1520,43 @@ class PoseStreamer:
 
         # Only send if buffer is full and we're not waiting for fresh data
         if buffer_is_full and not self.buffer_cleared:
-            numpy_data = {
-                "smpl_pose": np.stack((self.frame_buffer["smpl_pose"]), axis=0),
-                "smpl_joints": np.stack((self.frame_buffer["smpl_joints"]), axis=0),
-                "body_quat_w": np.stack((self.frame_buffer["body_quat_w"]), axis=0),
-                "joint_pos": np.stack((self.frame_buffer["joint_pos"]), axis=0),
-                "joint_vel": np.zeros((N, 29)),
-                "vr_position": vr_3pt_pose[:, :3].flatten(),
-                "vr_orientation": vr_3pt_pose[:, 3:].flatten(),
-                "frame_index": np.array((self.frame_buffer["frame_index"]), dtype=np.int64),
-                "left_trigger": np.array([left_trigger], dtype=np.float32),
-                "right_trigger": np.array([right_trigger], dtype=np.float32),
-                "left_grip": np.array([left_grip], dtype=np.float32),
-                "right_grip": np.array([right_grip], dtype=np.float32),
-                "pico_dt": np.array([pico_dt], dtype=np.float32),
-                "pico_fps": np.array([pico_fps], dtype=np.float32),
-                "timestamp_realtime": np.array(
-                    [sample.get("timestamp_realtime", 0.0)], dtype=np.float64
-                ),
-                "timestamp_monotonic": np.array(
-                    [sample.get("timestamp_monotonic", 0.0)], dtype=np.float64
-                ),
-                "left_hand_joints": left_hand_joints.reshape(-1).astype(np.float32),
-                "right_hand_joints": right_hand_joints.reshape(-1).astype(np.float32),
-                "toggle_data_collection": np.array([toggle_data_collection], dtype=bool),
-                "toggle_data_abort": np.array([toggle_data_abort], dtype=bool),
-                "heading_increment": np.array(
-                    [self.yaw_accumulator.yaw_angle_change()], dtype=np.float32
-                ),
-            }
+            if self.smpl_only:
+                numpy_data = {
+                    "smpl_joints": np.stack(self.frame_buffer["smpl_joints"]),
+                    "body_quat_w": np.stack(self.frame_buffer["body_quat_w"]),
+                    "frame_index": np.asarray(self.frame_buffer["frame_index"], dtype=np.int64),
+                    "timestamp_monotonic": np.array([sample.get("timestamp_monotonic", 0.0)], dtype=np.float64),
+                }
+            else:
+                numpy_data = {
+                    "smpl_pose": np.stack((self.frame_buffer["smpl_pose"]), axis=0),
+                    "smpl_joints": np.stack((self.frame_buffer["smpl_joints"]), axis=0),
+                    "body_quat_w": np.stack((self.frame_buffer["body_quat_w"]), axis=0),
+                    "joint_pos": np.stack((self.frame_buffer["joint_pos"]), axis=0),
+                    "joint_vel": np.zeros((N, 29)),
+                    "vr_position": vr_3pt_pose[:, :3].flatten(),
+                    "vr_orientation": vr_3pt_pose[:, 3:].flatten(),
+                    "frame_index": np.array((self.frame_buffer["frame_index"]), dtype=np.int64),
+                    "left_trigger": np.array([left_trigger], dtype=np.float32),
+                    "right_trigger": np.array([right_trigger], dtype=np.float32),
+                    "left_grip": np.array([left_grip], dtype=np.float32),
+                    "right_grip": np.array([right_grip], dtype=np.float32),
+                    "pico_dt": np.array([pico_dt], dtype=np.float32),
+                    "pico_fps": np.array([pico_fps], dtype=np.float32),
+                    "timestamp_realtime": np.array(
+                        [sample.get("timestamp_realtime", 0.0)], dtype=np.float64
+                    ),
+                    "timestamp_monotonic": np.array(
+                        [sample.get("timestamp_monotonic", 0.0)], dtype=np.float64
+                    ),
+                    "left_hand_joints": left_hand_joints.reshape(-1).astype(np.float32),
+                    "right_hand_joints": right_hand_joints.reshape(-1).astype(np.float32),
+                    "toggle_data_collection": np.array([toggle_data_collection], dtype=bool),
+                    "toggle_data_abort": np.array([toggle_data_abort], dtype=bool),
+                    "heading_increment": np.array(
+                        [self.yaw_accumulator.yaw_angle_change()], dtype=np.float32
+                    ),
+                }
 
             packed_message = pack_pose_message(numpy_data, topic="pose")
             self.socket.send(packed_message)
@@ -1612,6 +1630,7 @@ def run_pico(
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
     input_source: str = "xrt",
+    smpl_only: bool = False,
 ):
     """Run body tracking with real-time visualization and ZMQ streaming."""
     reader = _init_input_source(input_source, buffer_size)
@@ -1620,7 +1639,7 @@ def run_pico(
     socket.bind(f"tcp://*:{port}")
     time.sleep(0.1)
     print(f"ZMQ socket bound to port {port}")
-    if build_command_message is not None and build_planner_message is not None:
+    if not smpl_only and build_command_message is not None and build_planner_message is not None:
         try:
             socket.send(build_command_message(start=False, stop=False, planner=False))
             socket.send(build_planner_message(0, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], -1.0, -1.0))
@@ -1642,6 +1661,7 @@ def run_pico(
             enable_waist_tracking=enable_waist_tracking,
             enable_smpl_vis=enable_smpl_vis,
             reader=reader,
+            smpl_only=smpl_only,
         )
     finally:
         socket.close()
@@ -2171,6 +2191,8 @@ if __name__ == "__main__":
         "--num_frames_to_send", type=int, default=5, help="Number of frames to send (default: 200)"
     )
     parser.add_argument("--target_fps", type=int, default=50, help="Target loop FPS (default: 50)")
+    parser.add_argument("--smpl-only", action="store_true",
+                        help="Publish SMPL only for BUMI3; skip G1 FK, wrist targets and hand IK")
     parser.add_argument(
         "--cuda", action="store_true", help="Use CUDA for tensors and model (default: CPU)"
     )
@@ -2255,6 +2277,10 @@ if __name__ == "__main__":
         ),
     )
     args = parser.parse_args()
+    if args.smpl_only and (args.manager or args.vis_vr3pt or args.vis_smpl or args.waist_tracking):
+        parser.error("--smpl-only uses direct pose streaming; remove --manager and G1 visualization flags")
+    if args.smpl_only and (args.target_fps != 50 or args.num_frames_to_send < 10):
+        parser.error("BUMI3 SMPL streaming requires --target_fps 50 --num_frames_to_send 10 (or more)")
 
     # This process executes one SMPL sample at a time at 50 Hz.  PyTorch's
     # workstation default (20 intra-op + 20 inter-op threads here) creates
@@ -2329,4 +2355,5 @@ if __name__ == "__main__":
             enable_waist_tracking=args.waist_tracking,
             enable_smpl_vis=args.vis_smpl,
             input_source=args.input_source,
+            smpl_only=args.smpl_only,
         )

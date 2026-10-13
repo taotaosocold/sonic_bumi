@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "robot_type": "bumi3",
+  "motions": [
+    {
+      "name": "230907/angry_look_270_R_001__A451",
+      "robot": "robot/230907/angry_look_270_R_001__A451.pkl",
+      "smpl": "smpl/angry_look_270_R_001__A451.pkl",
+      "motion_key": "angry_look_270_R_001__A451"
+    },
+    {
+      "name": "231117/big_light_one_hand_front_low_to_right_side_low_R_001__A522",
+      "robot": "robot/231117/big_light_one_hand_front_low_to_right_side_low_R_001__A522.pkl",
+      "smpl": "smpl/big_light_one_hand_front_low_to_right_side_low_R_001__A522.pkl",
+      "motion_key": "big_light_one_hand_front_low_to_right_side_low_R_001__A522"
+    },
+    {
+      "name": "231005/bump_into_small_obstacle_stop_walk_ff_180_R_001__A461",
+      "robot": "robot/231005/bump_into_small_obstacle_stop_walk_ff_180_R_001__A461.pkl",
+      "smpl": "smpl/bump_into_small_obstacle_stop_walk_ff_180_R_001__A461.pkl",
+      "motion_key": "bump_into_small_obstacle_stop_walk_ff_180_R_001__A461"
+    },
+    {
+      "name": "230411/dance_basic_turn_v1_360_R_003__A306",
+      "robot": "robot/230411/dance_basic_turn_v1_360_R_003__A306.pkl",
+      "smpl": "smpl/dance_basic_turn_v1_360_R_003__A306.pkl",
+      "motion_key": "dance_basic_turn_v1_360_R_003__A306"
+    },
+    {
+      "name": "230413/dance_hiphop_point_right_left_side_side_strong_men_R_fast_001__A316",
+      "robot": "robot/230413/dance_hiphop_point_right_left_side_side_strong_men_R_fast_001__A316.pkl",
+      "smpl": "smpl/dance_hiphop_point_right_left_side_side_strong_men_R_fast_001__A316.pkl",
+      "motion_key": "dance_hiphop_point_right_left_side_side_strong_men_R_fast_001__A316"
+    },
+    {
+      "name": "230413/dance_vouge_dancehall_open_close_270_R_fast_001__A316",
+      "robot": "robot/230413/dance_vouge_dancehall_open_close_270_R_fast_001__A316.pkl",
+      "smpl": "smpl/dance_vouge_dancehall_open_close_270_R_fast_001__A316.pkl",
+      "motion_key": "dance_vouge_dancehall_open_close_270_R_fast_001__A316"
+    },
+    {
+      "name": "230324/fall_spin_in_air_R_001__A304",
+      "robot": "robot/230324/fall_spin_in_air_R_001__A304.pkl",
+      "smpl": "smpl/fall_spin_in_air_R_001__A304.pkl",
+      "motion_key": "fall_spin_in_air_R_001__A304"
+    },
+    {
+      "name": "230119/idle_crouch_right_loop_101__A127",
+      "robot": "robot/230119/idle_crouch_right_loop_101__A127.pkl",
+      "smpl": "smpl/idle_crouch_right_loop_101__A127.pkl",
+      "motion_key": "idle_crouch_right_loop_101__A127"
+    },
+    {
+      "name": "230301/injured_R_leg_turn_jump_360_R_001__A229",
+      "robot": "robot/230301/injured_R_leg_turn_jump_360_R_001__A229.pkl",
+      "smpl": "smpl/injured_R_leg_turn_jump_360_R_001__A229.pkl",
+      "motion_key": "injured_R_leg_turn_jump_360_R_001__A229"
+    },
+    {
+      "name": "231115/inside_door_knob_left_side_walk_close_behind_R_001__A512",
+      "robot": "robot/231115/inside_door_knob_left_side_walk_close_behind_R_001__A512.pkl",
+      "smpl": "smpl/inside_door_knob_left_side_walk_close_behind_R_001__A512.pkl",
+      "motion_key": "inside_door_knob_left_side_walk_close_behind_R_001__A512"
+    },
+    {
+      "name": "230103/lamenting_001__A100",
+      "robot": "robot/230103/lamenting_001__A100.pkl",
+      "smpl": "smpl/lamenting_001__A100.pkl",
+      "motion_key": "lamenting_001__A100"
+    },
+    {
+      "name": "231117/medium_big_heavy_one_hand_right_side_low_to_right_side_medium_R_001__A520",
+      "robot": "robot/231117/medium_big_heavy_one_hand_right_side_low_to_right_side_medium_R_001__A520.pkl",
+      "smpl": "smpl/medium_big_heavy_one_hand_right_side_low_to_right_side_medium_R_001__A520.pkl",
+      "motion_key": "medium_big_heavy_one_hand_right_side_low_to_right_side_medium_R_001__A520"
+    },
+    {
+      "name": "231120/medium_big_light_one_hand_right_side_high_to_right_side_medium_R_002__A524",
+      "robot": "robot/231120/medium_big_light_one_hand_right_side_high_to_right_side_medium_R_002__A524.pkl",
+      "smpl": "smpl/medium_big_light_one_hand_right_side_high_to_right_side_medium_R_002__A524.pkl",
+      "motion_key": "medium_big_light_one_hand_right_side_high_to_right_side_medium_R_002__A524"
+    },
+    {
+      "name": "231114/medium_big_light_two_hands_walk_ff_start_180_R_001__A508",
+      "robot": "robot/231114/medium_big_light_two_hands_walk_ff_start_180_R_001__A508.pkl",
+      "smpl": "smpl/medium_big_light_two_hands_walk_ff_start_180_R_001__A508.pkl",
+      "motion_key": "medium_big_light_two_hands_walk_ff_start_180_R_001__A508"
+    },
+    {
+      "name": "231120/medium_heavy_two_hands_front_high_to_behind_high_R_001__A524",
+      "robot": "robot/231120/medium_heavy_two_hands_front_high_to_behind_high_R_001__A524.pkl",
+      "smpl": "smpl/medium_heavy_two_hands_front_high_to_behind_high_R_001__A524.pkl",
+      "motion_key": "medium_heavy_two_hands_front_high_to_behind_high_R_001__A524"
+    },
+    {
+      "name": "231019/mid_vertical_handle_vertical_lever_over_front_001__A484",
+      "robot": "robot/231019/mid_vertical_handle_vertical_lever_over_front_001__A484.pkl",
+      "smpl": "smpl/mid_vertical_handle_vertical_lever_over_front_001__A484.pkl",
+      "motion_key": "mid_vertical_handle_vertical_lever_over_front_001__A484"
+    },
+    {
+      "name": "231115/outside_door_knob_right_side_open_walk_turn_close_R_001__A512",
+      "robot": "robot/231115/outside_door_knob_right_side_open_walk_turn_close_R_001__A512.pkl",
+      "smpl": "smpl/outside_door_knob_right_side_open_walk_turn_close_R_001__A512.pkl",
+      "motion_key": "outside_door_knob_right_side_open_walk_turn_close_R_001__A512"
+    },
+    {
+      "name": "231004/shock_both_hands_R_001__A456",
+      "robot": "robot/231004/shock_both_hands_R_001__A456.pkl",
+      "smpl": "smpl/shock_both_hands_R_001__A456.pkl",
+      "motion_key": "shock_both_hands_R_001__A456"
+    },
+    {
+      "name": "231113/small_heavy_two_hands_walk_ff_stop_270_R_001__A504",
+      "robot": "robot/231113/small_heavy_two_hands_walk_ff_stop_270_R_001__A504.pkl",
+      "smpl": "smpl/small_heavy_two_hands_walk_ff_stop_270_R_001__A504.pkl",
+      "motion_key": "small_heavy_two_hands_walk_ff_stop_270_R_001__A504"
+    },
+    {
+      "name": "231004/take_a_sip_360_start_R_001__A456",
+      "robot": "robot/231004/take_a_sip_360_start_R_001__A456.pkl",
+      "smpl": "smpl/take_a_sip_360_start_R_001__A456.pkl",
+      "motion_key": "take_a_sip_360_start_R_001__A456"
+    },
+    {
+      "name": "220713/turn_start_jog_0090_001__A021",
+      "robot": "robot/220713/turn_start_jog_0090_001__A021.pkl",
+      "smpl": "smpl/turn_start_jog_0090_001__A021.pkl",
+      "motion_key": "turn_start_jog_0090_001__A021"
+    },
+    {
+      "name": "230905/walk_arc_cw_stop_R_very_slow_001__A443",
+      "robot": "robot/230905/walk_arc_cw_stop_R_very_slow_001__A443.pkl",
+      "smpl": "smpl/walk_arc_cw_stop_R_very_slow_001__A443.pkl",
+      "motion_key": "walk_arc_cw_stop_R_very_slow_001__A443"
+    },
+    {
+      "name": "230906/walk_ff_start_360_R_fast_001__A447",
+      "robot": "robot/230906/walk_ff_start_360_R_fast_001__A447.pkl",
+      "smpl": "smpl/walk_ff_start_360_R_fast_001__A447.pkl",
+      "motion_key": "walk_ff_start_360_R_fast_001__A447"
+    },
+    {
+      "name": "231121/zoidberg_scuttle_R_001__A528",
+      "robot": "robot/231121/zoidberg_scuttle_R_001__A528.pkl",
+      "smpl": "smpl/zoidberg_scuttle_R_001__A528.pkl",
+      "motion_key": "zoidberg_scuttle_R_001__A528"
+    }
+  ]
+}

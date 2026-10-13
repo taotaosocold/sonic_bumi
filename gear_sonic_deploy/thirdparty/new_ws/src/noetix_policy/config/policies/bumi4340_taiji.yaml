@@ -1,0 +1,215 @@
+# BUMI4340 太极 MimicLite tracking 策略。
+# ONNX 来自 Bumi4340TaiChiStage2；该模型不是速度指令策略，而是参考动作跟踪策略。
+enabled: true
+order: 1
+name: bumi4340_taiji
+robot: bumi4340
+policy_type: mimic_tracking
+
+control:
+  # Stage2 配置 step_dt=0.02 s -> 50 Hz。
+  frequency_hz: 50.0
+
+model:
+  package: noetix_policy
+  file: policy/bumi4340/taiji.onnx
+
+# 导出接口：command[240] + policy[378] -> action[21]
+inputs:
+  command:
+    name: command
+    size: 240
+  policy:
+    name: policy
+    size: 378
+    # MimicLite 导出未定义额外部署侧 observation clip；保持不干预。
+    clip: 1000000000.0
+
+action:
+  type: joint_position_delta
+  output_name: action
+  dimension: 21
+  clip: 18.0
+
+# 必须保持导出时的 21 关节顺序。
+joints:
+  names:
+    - l_leg_pitch_joint
+    - r_leg_pitch_joint
+    - waist_yaw_joint
+    - l_leg_roll_joint
+    - r_leg_roll_joint
+    - l_arm_pitch_joint
+    - r_arm_pitch_joint
+    - l_leg_yaw_joint
+    - r_leg_yaw_joint
+    - l_arm_roll_joint
+    - r_arm_roll_joint
+    - l_knee_pitch_joint
+    - r_knee_pitch_joint
+    - l_arm_yaw_joint
+    - r_arm_yaw_joint
+    - l_ankle_pitch_joint
+    - r_ankle_pitch_joint
+    - l_elbow_pitch_joint
+    - r_elbow_pitch_joint
+    - l_ankle_roll_joint
+    - r_ankle_roll_joint
+
+tracking:
+  root_body_name: base_link
+  # 必须与训练/导出一致。50 Hz 下对应：-160,-80,-40,0,+20,+80,+160,+320 ms。
+  future_steps: [-8, -4, -2, 0, 1, 4, 8, 16]
+  history_steps: [0, 1, 2, 3, 4, 8, 16]
+
+  # taiji.yaml 导出的 policy 输入总维度是 378。
+  # 7*(gyro3+gravity3+q21+dq21)=336，剩余 42 = 2*21 个历史 action。
+  # 因而部署按实际 ONNX 接口使用 2 帧 previous action。
+  prev_action_steps: 2
+
+  reference:
+    package: noetix_policy
+    file: motion/bumi4340/taiji_reference.npz
+    fps: 50.0
+    # 太极播完后保持末帧跟踪，按 stop 键退出；不自动卸力。
+    loop: false
+
+runtime:
+  # 下列参数来自 taiji.yaml 的 Stage2 ONNX 导出描述，不沿用 walkrun 的参数。
+  action_scale:
+    - 0.2777777910232544
+    - 0.2777777910232544
+    - 0.12735849618911743
+    - 0.2777777910232544
+    - 0.2777777910232544
+    - 0.125
+    - 0.125
+    - 0.15714286267757416
+    - 0.15714286267757416
+    - 0.125
+    - 0.125
+    - 0.2777777910232544
+    - 0.2777777910232544
+    - 0.125
+    - 0.125
+    - 0.3492063581943512
+    - 0.3492063581943512
+    - 0.125
+    - 0.125
+    - 0.261904776096344
+    - 0.261904776096344
+
+  default_position:
+    - -0.1495
+    - -0.1495
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.3
+    - -0.3
+    - 0.3215
+    - 0.3215
+    - 0.0
+    - 0.0
+    - -0.172
+    - -0.172
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+
+  kp:
+    - 45.0
+    - 45.0
+    - 53.0
+    - 45.0
+    - 45.0
+    - 8.0
+    - 8.0
+    - 35.0
+    - 35.0
+    - 8.0
+    - 8.0
+    - 45.0
+    - 45.0
+    - 8.0
+    - 8.0
+    - 15.75
+    - 15.75
+    - 8.0
+    - 8.0
+    - 21.0
+    - 21.0
+
+  kd:
+    - 3.0
+    - 3.0
+    - 3.4
+    - 3.0
+    - 3.0
+    - 0.4
+    - 0.4
+    - 2.5
+    - 2.5
+    - 0.4
+    - 0.4
+    - 2.0
+    - 2.0
+    - 0.4
+    - 0.4
+    - 1.125
+    - 1.125
+    - 0.4
+    - 0.4
+    - 1.5
+    - 1.5
+
+  max_position_delta: null
+  history_init: repeat
+
+  # 先从实测关节位插值到 reference 第 0 帧，再开始跟踪，避免策略瞬时接管。
+  # position 仅作为通用 Runtime 的 fallback；tracking runtime 会以 reference[0] 覆盖。
+  entry_pose:
+    enabled: true
+    duration_s: 2.5
+    position:
+      - -0.1495
+      - -0.1495
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.3
+      - -0.3
+      - 0.3215
+      - 0.3215
+      - 0.0
+      - 0.0
+      - -0.172
+      - -0.172
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+    kp: 10.0
+    kd: 0.5
+
+motion:
+  required: true
+
+safety:
+  fall_protection_enabled: true
+  projected_gravity_z_max: -0.3
+  on_trigger: default
+
+lifecycle:
+  # 参考轨迹播完后 runtime 会持续跟踪末帧，直到 button 1 stop。
+  on_complete: hold_last
+  on_failure: stand

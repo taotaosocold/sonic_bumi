@@ -1,6 +1,16 @@
 cmake_minimum_required(VERSION 3.14 FATAL_ERROR) # Set the minimum required
                                                  # version of CMake
 
+set(ROBOT_TYPE "g1" CACHE STRING "Deployment robot: g1 or bumi3")
+set_property(CACHE ROBOT_TYPE PROPERTY STRINGS g1 bumi3)
+if(ROBOT_TYPE STREQUAL "bumi3")
+  project(bumi3_deploy LANGUAGES C CXX)
+  add_subdirectory(src/bumi3)
+  return()
+elseif(NOT ROBOT_TYPE STREQUAL "g1")
+  message(FATAL_ERROR "ROBOT_TYPE must be g1 or bumi3")
+endif()
+
 project(
   g1_deploy
   VERSION 1.0.0

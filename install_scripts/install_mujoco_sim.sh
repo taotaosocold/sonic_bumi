@@ -11,6 +11,32 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# BUMI3 follows the same entry point with a lightweight native deployment stack.
+if [[ "${1:-}" == "--robot-type" && "${2:-}" == "bumi3" ]]; then
+    # ROS Python extension modules must match the environment's Python ABI.
+    bash "$REPO_ROOT/gear_sonic_deploy/scripts/setup_bumi3_ros2.sh" sim
+    VENV_PATH="${BUMI_DEPLOY_VENV:-$REPO_ROOT/.venv_sim}"
+    PYTHON_COMMAND="${BUMI_INSTALL_PYTHON:-${BUMI_ROS_PYTHON:-/usr/bin/python3}}"
+    [[ -x "$VENV_PATH/bin/python" ]] || "$PYTHON_COMMAND" -m venv "$VENV_PATH"
+    "$VENV_PATH/bin/python" -m pip --version >/dev/null 2>&1 || "$VENV_PATH/bin/python" -m ensurepip --upgrade
+    "$VENV_PATH/bin/python" -m pip install 'numpy==1.26.4' 'scipy==1.15.3' \
+        'mujoco==3.15.0' 'onnxruntime==1.23.2' 'tyro==0.8.14' 'pyyaml>=6,<7' 'joblib>=1.3,<2' 'pyzmq>=25,<28'
+    # 原有仿真/离线工具使用 Python 包；C++ 策略通过 G1 的安装入口获取完整 SDK。
+    # Python 工具可以继续使用 CPU 包；C++ GPU 推理由 ONNX_VARIANT=gpu 选择的原生 SDK 提供。
+    # CPU/GPU SDK 分目录安装，已有环境不覆盖；CUDA、cuDNN、TensorRT 在目标机器单独配置。
+    BUMI_ORT_VARIANT="${ONNX_VARIANT:-cpu}"
+    BUMI_ORT_DEFAULT=/opt/onnxruntime/1.23.2
+    [[ "$BUMI_ORT_VARIANT" != gpu ]] || BUMI_ORT_DEFAULT=/opt/onnxruntime-gpu/1.23.2
+    ONNX_VERSION=1.23.2 ONNX_VARIANT="$BUMI_ORT_VARIANT" \
+        ONNX_INSTALL_PATH="${ONNX_INSTALL_PATH:-${onnxruntime_ROOT:-$BUMI_ORT_DEFAULT}}" \
+        bash "$REPO_ROOT/gear_sonic_deploy/scripts/install_deps.sh" --onnxruntime-only
+    echo "BUMI3 environment ready. Source gear_sonic_deploy/scripts/setup_bumi3_ros2.sh before the simulator."
+    echo "After preparing PKLs, convert references before deployment:"
+    echo "  source .venv_sim/bin/activate"
+    echo "  python gear_sonic_deploy/reference/bumi3_convert_motion.py"
+    exit 0
+fi
+
 # ── 0. Print detected architecture ───────────────────────────────────────────
 ARCH="$(uname -m)"
 echo "[OK] Architecture: $ARCH"

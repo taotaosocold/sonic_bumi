@@ -26,6 +26,103 @@ NC='\033[0m' # No Color
 
 # Script directory (where this script is located)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Select the robot while preserving the original G1 entry and its defaults.
+ROBOT_TYPE=g1
+BUMI_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --robot-type)
+            [[ $# -ge 2 ]] || { echo "--robot-type requires g1 or bumi3" >&2; exit 2; }
+            ROBOT_TYPE="$2"; shift 2 ;;
+        --robot-type=*) ROBOT_TYPE="${1#*=}"; shift ;;
+        *) BUMI_ARGS+=("$1"); shift ;;
+    esac
+done
+set -- "${BUMI_ARGS[@]}"
+if [[ "$ROBOT_TYPE" == bumi3 ]]; then
+    REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+    PYTHON_BIN="${BUMI_DEPLOY_PYTHON:-$REPO_ROOT/.venv_sim/bin/python}"
+    [[ -x "$PYTHON_BIN" ]] || {
+        echo "BUMI3 environment missing. Run bash install_scripts/install_mujoco_sim.sh --robot-type bumi3" >&2
+        exit 2
+    }
+    export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+    cd "$REPO_ROOT"
+    # 与 G1 一样先构建机器人的 C++ 控制程序，参数和 YAML 均交给原生入口解析。
+    bash "$SCRIPT_DIR/scripts/setup_bumi3_ros2.sh" sim
+    source "$SCRIPT_DIR/scripts/setup_bumi3_ros2.sh"
+    # 与 G1 一样链接环境安装的 C++ SDK；自定义路径可通过安装参数或标准根目录变量指定。
+    # GPU SDK 通过环境选择，仍允许从任意安装目录构建；不把个人机器路径写入配置或代码。
+    ORT_DEFAULT=/opt/onnxruntime/1.23.2
+    [[ "${ONNX_VARIANT:-cpu}" != gpu ]] || ORT_DEFAULT=/opt/onnxruntime-gpu/1.23.2
+    ORT_ROOT="${ONNX_INSTALL_PATH:-${onnxruntime_ROOT:-$ORT_DEFAULT}}"
+    ORT_ROOT="$(realpath -m "$ORT_ROOT")"
+    # 编译与运行必须选中同一个 SDK，避免 G1 环境的旧 CPU 动态库覆盖新 GPU 后端。
+    export LD_LIBRARY_PATH="$ORT_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    BUILD_DIR="$SCRIPT_DIR/build/bumi3"
+    cmake -U 'onnxruntime_*' -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DROBOT_TYPE=bumi3 \
+        -DCMAKE_BUILD_TYPE=Release -Donnxruntime_ROOT="$ORT_ROOT" \
+        -Dnoetix_msgs_DIR="$BUMI_ROS_INSTALL/share/noetix_msgs/cmake" \
+        -DPython3_EXECUTABLE="${BUMI_ROS_PYTHON:-/usr/bin/python3}" -DBUILD_TESTING=OFF
+    cmake --build "$BUILD_DIR" --parallel "${BUMI_BUILD_JOBS:-2}"
+    DEPLOY_EXECUTABLE="$BUILD_DIR/bin/bumi3_deploy_onnx_ref"
+    if [[ " $* " == *" --help "* || " $* " == *" -h "* ]]; then
+        "$DEPLOY_EXECUTABLE" --help
+        exit 0
+    fi
+    if [[ " $* " == *" --capabilities "* ]]; then
+        "$DEPLOY_EXECUTABLE" --capabilities
+        exit 0
+    fi
+    RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sonic_bumi3.XXXXXX")"
+    BRIDGE_PID=""
+    cleanup_bumi3() {
+        if [[ -n "$BRIDGE_PID" ]]; then
+            kill -INT "$BRIDGE_PID" 2>/dev/null || true
+            wait "$BRIDGE_PID" 2>/dev/null || true
+        fi
+        rm -rf -- "$RUNTIME_DIR"
+    }
+    trap cleanup_bumi3 EXIT
+    # C++ 准备临时桥配置并输出固定启动字段；捕获失败状态，避免配置失败后继续启动。
+    LAUNCH_INFO="$("$DEPLOY_EXECUTABLE" "$@" --prepare-launch "$RUNTIME_DIR")"
+    mapfile -t ROS_RUNTIME <<< "$LAUNCH_INFO"
+    export ROS_DOMAIN_ID="${ROS_RUNTIME[0]}"
+    if [[ "${ROS_RUNTIME[1]}" == 1 ]]; then
+        # 在启动真机环境前，由原生程序加载并检查模型和离线动作。
+        "$BUILD_DIR/bin/bumi3_deploy_onnx_ref" --runtime-config "$RUNTIME_DIR/runtime.json" --validate-only
+        VENDOR_ARCH="$(uname -m)"
+        [[ "$VENDOR_ARCH" != arm64 ]] || VENDOR_ARCH=aarch64
+        SDK_SOURCE="${BUMI3_SDK_ROOT:-$SCRIPT_DIR/thirdparty/new_ws/src/noetix_sdk2}"
+        if [[ ! -f "$SDK_SOURCE/third-party/vendor/hw_controller/bumi/$VENDOR_ARCH/lib/libhw_controller.a" ]]; then
+            echo "Missing $VENDOR_ARCH Bumi vendor archive. Install the matching SDK library, or use --external-bridge for a remote hardware node." >&2
+            exit 2
+        fi
+        bash "$SCRIPT_DIR/scripts/setup_bumi3_ros2.sh" real
+        source "$SCRIPT_DIR/scripts/setup_bumi3_ros2.sh"
+        BRIDGE_COMMAND=("$BUMI_ROS_INSTALL/lib/noetix_bridge/noetix_bridge_node" --ros-args \
+            --params-file "$RUNTIME_DIR/bridge_params.yaml" \
+            -r "/noetix/low_cmd:=${ROS_RUNTIME[2]}" \
+            -r "/noetix/low_state:=${ROS_RUNTIME[3]}" \
+            -r "/noetix/control_request:=${ROS_RUNTIME[4]}")
+        if [[ "${BUMI_BRIDGE_SUDO:-0}" == 1 ]]; then
+            sudo -v
+            BRIDGE_ENV=("ROS_DOMAIN_ID=$ROS_DOMAIN_ID" "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" \
+                "AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH:-}" "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}")
+            [[ -z "${RMW_IMPLEMENTATION:-}" ]] || BRIDGE_ENV+=("RMW_IMPLEMENTATION=$RMW_IMPLEMENTATION")
+            sudo env "${BRIDGE_ENV[@]}" "${BRIDGE_COMMAND[@]}" &
+        else
+            "${BRIDGE_COMMAND[@]}" &
+        fi
+        BRIDGE_PID=$!
+    fi
+    "$BUILD_DIR/bin/bumi3_deploy_onnx_ref" --runtime-config "$RUNTIME_DIR/runtime.json"
+    exit $?
+elif [[ "$ROBOT_TYPE" != g1 ]]; then
+    echo "--robot-type must be g1 or bumi3" >&2
+    exit 2
+fi
 cd "$SCRIPT_DIR"
 
 # ============================================================================

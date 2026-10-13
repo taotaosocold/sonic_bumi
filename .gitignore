@@ -249,3 +249,14 @@ models/
 # Downloaded from HuggingFace (hf download)
 sample_data/
 sonic_release/
+
+# Local BUMI3 deployment motion assets; distribute/download separately.
+/gear_sonic_deploy/reference/bumi3_example/pkl/robot/
+/gear_sonic_deploy/reference/bumi3_example/pkl/smpl/
+/gear_sonic_deploy/reference/bumi3_example/converted/
+/gear_sonic_deploy/reference/bumi3_example/converted_*/
+
+# 内置 Noetix 工作空间的本机编译产物不随源码分发，换机器后重新生成。
+/gear_sonic_deploy/thirdparty/new_ws/build/
+/gear_sonic_deploy/thirdparty/new_ws/install/
+/gear_sonic_deploy/thirdparty/new_ws/log/

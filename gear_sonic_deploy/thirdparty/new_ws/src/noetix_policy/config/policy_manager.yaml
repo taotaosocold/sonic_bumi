@@ -1,0 +1,57 @@
+policy_manager:
+  # 本节点只负责策略推理和 LowCmd 输出，不改变机器人控制模式。
+  low_state_topic: /noetix/low_state
+  low_cmd_topic: /noetix/low_cmd
+  joy_topic: /joy
+  policy_state_topic: /noetix/policy_state
+
+  # Bumi real-hardware policy cadence. The 500 Hz lower-level I/O loop holds
+  # the latest 50 Hz policy command between policy updates.
+  policy_hz: 50.0
+
+  # GPU 推理全局配置。provider=auto 时优先 TensorRT，其次 CUDA。
+  inference:
+    device: gpu
+    provider: auto
+    device_id: 0
+    allow_cpu_fallback: false
+    # Keep standard session.run during bring-up. It still runs on CUDA/TensorRT,
+    # but avoids hiding output-buffer issues while validating the policy.
+    io_binding: false
+    warmup_runs: 20
+
+    cuda:
+      do_copy_in_default_stream: true
+      gpu_mem_limit_mb: 0
+
+    tensorrt:
+      enabled: true
+      fp16: false
+      engine_cache_enable: true
+      engine_cache_path: ~/.cache/noetix_policy/tensorrt
+
+  preload_models: true
+  inference_stats_period_s: 5.0
+  policy_debug_period_s: 1.0
+
+  # button 0 activates the walk policy for the selected robot_name.
+  # button 1 stops the active policy.
+  stop_button: 1
+
+  policies:
+    - robot: bumi4340
+      file: policies/bumi4340_walk.yaml
+      button: 0
+
+    # BUMI4340 太极 tracking 策略；button 4 未被机器人 enable/disable/stand/lie 占用。
+    - robot: bumi4340
+      file: policies/bumi4340_taiji.yaml
+      button: 4
+
+    - robot: bumi3
+      file: policies/bumi3_walk.yaml
+      button: 0
+
+    - robot: bumi2
+      file: policies/bumi2_walk.yaml
+      button: 0

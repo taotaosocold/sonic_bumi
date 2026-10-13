@@ -1,0 +1,43 @@
+# All file paths are relative to the sonic_bumi repository root, regardless of cwd.
+# Copy this file to .local/bumi3.yaml to keep machine settings out of git.
+version: 1
+contract: gear_sonic_deploy/policy/bumi3/observation_config.yaml
+policies:
+  robot: gear_sonic_deploy/policy/bumi3/robot/model_step_066000_g1_bumi3_urdf.onnx
+  smpl: gear_sonic_deploy/policy/bumi3/smpl/model_step_066000_smpl_bumi3_urdf.onnx
+dataset: gear_sonic_deploy/reference/bumi3_example/converted/dataset.json
+inference:
+  # CPU 保留无显卡机器的默认行为；目标 GPU 机器改为 cuda 或 tensorrt，也可由 --provider 覆盖。
+  provider: cpu
+  # 设备编号按 CUDA_VISIBLE_DEVICES 过滤后的可见顺序解释。
+  device_id: 0
+  # 与 G1 的 --policy-fp16 对应，仅 TensorRT 模式使用；模型输入输出仍为 float32。
+  fp16: false
+  # TensorRT 在初始化预热时捕获 CUDA Graph，首次引擎构建不会进入 50 Hz 控制循环。
+  cuda_graph: true
+  engine_cache_dir: .local/bumi3/tensorrt
+  workspace_size_mb: 1024
+ros2:
+  # Keep this identical on the policy and environment machines.
+  domain_id: 1
+  state_topic: /noetix/low_state
+  command_topic: /noetix/low_cmd
+  request_topic: /noetix/control_request
+  sim_reset_topic: /noetix/sim/reset
+  sim_status_topic: /noetix/sim/status
+  sim_reference_topic: /noetix/sim/reference
+  state_timeout: 0.25
+  command_timeout: 0.25
+teleop:
+  endpoint: tcp://127.0.0.1:5556
+  topic: pose
+  startup_timeout: 300.0
+  stream_timeout: 0.5
+hardware:
+  robot_root: gear_sonic_deploy/thirdparty/new_ws/src/noetix_robots/bumi3
+  # Override using a machine-local YAML, or deploy.sh --interface enp1s0.
+  network: gear_sonic_deploy/thirdparty/new_ws/src/noetix_robots/common/bumi/network.yaml
+  io_frequency: 1000
+  entry_duration: 3.0
+  # Rotation from IMU sensor coordinates to base_link coordinates, wxyz.
+  imu_to_base_wxyz: [1.0, 0.0, 0.0, 0.0]

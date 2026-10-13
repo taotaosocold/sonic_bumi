@@ -2,6 +2,91 @@
 
 set -e
 
+# 两种机器人共用官方 C++ SDK 的环境安装流程。单独调用时只安装 ONNX Runtime，
+# 不安装 CUDA、TensorRT 或其他 G1 依赖；下载和解压在独立临时目录中完成。
+# ONNX_VARIANT=gpu 可选择带 GPU 执行后端的 SDK；现有 G1 调用仍默认选择 CPU 包。
+install_onnxruntime() (
+    set -e
+    local task_version="${ONNX_VERSION:-1.16.3}"
+    local task_variant="${ONNX_VARIANT:-cpu}"
+    local task_prefix task_arch task_package task_temp task_installed task_default_prefix
+    [[ "$task_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+        echo "Invalid ONNX_VERSION: $task_version" >&2; exit 2;
+    }
+    [[ "$task_variant" == cpu || "$task_variant" == gpu ]] || {
+        echo "ONNX_VARIANT must be cpu or gpu" >&2; exit 2;
+    }
+    task_default_prefix=/opt/onnxruntime
+    [[ "$task_variant" != gpu ]] || task_default_prefix="/opt/onnxruntime-gpu/$task_version"
+    task_prefix="$(realpath -m "${ONNX_INSTALL_PATH:-$task_default_prefix}")"
+    if [[ -e "$task_prefix" ]]; then
+        [[ -f "$task_prefix/include/onnxruntime_cxx_api.h" &&
+           -f "$task_prefix/lib/libonnxruntime.so" && -f "$task_prefix/VERSION_NUMBER" ]] || {
+            echo "Incomplete ONNX Runtime SDK at $task_prefix; choose another ONNX_INSTALL_PATH." >&2; exit 2;
+        }
+        task_installed="$(tr -d '[:space:]' < "$task_prefix/VERSION_NUMBER")"
+        if [[ "$task_variant" == gpu &&
+              ( ! -f "$task_prefix/lib/libonnxruntime_providers_cuda.so" ||
+                ! -f "$task_prefix/lib/libonnxruntime_providers_tensorrt.so" ) ]]; then
+            echo "SDK at $task_prefix has no CUDA/TensorRT providers; choose a separate GPU ONNX_INSTALL_PATH." >&2
+            exit 2
+        fi
+        if [[ "$(printf '%s\n' "$task_version" "$task_installed" | sort -V | head -n 1)" == "$task_version" ]]; then
+            echo "ONNX Runtime $task_installed already installed at $task_prefix"
+            exit 0
+        fi
+        echo "ONNX Runtime $task_installed at $task_prefix is older than $task_version; choose another ONNX_INSTALL_PATH." >&2
+        exit 2
+    fi
+    case "$(uname -m)" in
+        x86_64|amd64) task_arch=x64 ;;
+        aarch64|arm64) task_arch=aarch64 ;;
+        *) echo "Unsupported ONNX Runtime architecture: $(uname -m)" >&2; exit 2 ;;
+    esac
+    task_package="onnxruntime-linux-${task_arch}-${task_version}"
+    if [[ "$task_variant" == gpu ]]; then
+        # 官方此版本的通用 Linux GPU 包仅提供 x64；Jetson 使用匹配 JetPack 的 SDK，不猜测下载地址。
+        [[ "$task_arch" == x64 ]] || {
+            echo "For ARM/Jetson, install a JetPack-compatible GPU C++ SDK and set ONNX_INSTALL_PATH." >&2; exit 2;
+        }
+        task_package="onnxruntime-linux-${task_arch}-gpu-${task_version}"
+    fi
+    task_temp="$(mktemp -d "${TMPDIR:-/tmp}/sonic_onnxruntime.XXXXXX")"
+    # 退出时仅清理此次下载的临时目录；已有 SDK 不覆盖，其他机器的安装重新执行即可。
+    trap 'rm -rf -- "$task_temp"' EXIT
+    echo "Installing ONNX Runtime $task_version ($task_variant) at $task_prefix"
+    curl --fail --location --retry 3 --connect-timeout 30 --max-time 300 \
+        "https://github.com/microsoft/onnxruntime/releases/download/v${task_version}/${task_package}.tgz" \
+        --output "$task_temp/sdk.tgz"
+    mkdir "$task_temp/sdk"
+    tar -xzf "$task_temp/sdk.tgz" --strip-components=1 -C "$task_temp/sdk"
+    [[ -f "$task_temp/sdk/include/onnxruntime_cxx_api.h" &&
+       -f "$task_temp/sdk/lib/libonnxruntime.so" && -f "$task_temp/sdk/VERSION_NUMBER" ]] || {
+        echo "Downloaded archive does not contain a complete C++ SDK." >&2; exit 2;
+    }
+    if [[ "$task_variant" == gpu &&
+          ( ! -f "$task_temp/sdk/lib/libonnxruntime_providers_cuda.so" ||
+            ! -f "$task_temp/sdk/lib/libonnxruntime_providers_tensorrt.so" ) ]]; then
+        echo "Downloaded GPU SDK is missing CUDA/TensorRT provider libraries." >&2; exit 2
+    fi
+    # 已有环境目录可写时直接安装；只有系统目录没有写权限时才需要 sudo。
+    if mkdir -p "$(dirname "$task_prefix")" 2>/dev/null && [[ -w "$(dirname "$task_prefix")" ]]; then
+        mv "$task_temp/sdk" "$task_prefix"
+    elif [[ "$task_prefix" == /opt/* || "$task_prefix" == /usr/* ]]; then
+        sudo mkdir -p "$(dirname "$task_prefix")"
+        sudo mv "$task_temp/sdk" "$task_prefix"
+    else
+        echo "Cannot write to ONNX_INSTALL_PATH: $task_prefix" >&2
+        exit 2
+    fi
+    echo "ONNX Runtime installed at $task_prefix"
+)
+
+if [[ "${1:-}" == --onnxruntime-only ]]; then
+    install_onnxruntime
+    exit 0
+fi
+
 echo "🚀 Installing G1 Deploy system dependencies..."
 sudo apt-get update && sudo apt-get install -y libgtest-dev
 
@@ -380,48 +465,16 @@ echo "🧠 Setting up ONNX Runtime..."
 ONNX_INSTALL_PATH="${ONNX_INSTALL_PATH:-/opt/onnxruntime}"
 
 if [ ! -d "$ONNX_INSTALL_PATH" ]; then
-    ONNX_VERSION="1.16.3"
-    ONNX_ARCH=$(uname -m)
-    
-    if [ "$ONNX_ARCH" = "x86_64" ]; then
-        ONNX_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-x64-${ONNX_VERSION}.tgz"
-    elif [ "$ONNX_ARCH" = "aarch64" ]; then
-        # Same URL for all ARM64 systems (Jetson and regular ARM64)
-        ONNX_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-aarch64-${ONNX_VERSION}.tgz"
-        if [ "$IS_JETSON" = true ]; then
-            echo "🤖 Jetson system detected - using ARM64 ONNX Runtime..."
-        fi
-    else
-        echo "❌ Unsupported architecture: $ONNX_ARCH"
-        exit 1
-    fi
-    
-    echo "📥 Downloading ONNX Runtime ${ONNX_VERSION} for ${ONNX_ARCH}$([ "$IS_JETSON" = true ] && echo " (Jetson-optimized)")..."
-    cd /tmp
-    
-    # Download with retry for Jetson systems (sometimes have slower network)
-    if [ "$IS_JETSON" = true ]; then
-        curl -L --retry 3 --retry-delay 2 "$ONNX_URL" -o onnxruntime.tgz
-    else
-    curl -L "$ONNX_URL" -o onnxruntime.tgz
-    fi
-    
-    tar xzf onnxruntime.tgz
-    
-    # Move to configured location (may need sudo for system paths)
-    ONNX_DIR=$(ls -d onnxruntime-linux-* | head -n1)
-    
+    install_onnxruntime
+
     if [[ "$ONNX_INSTALL_PATH" =~ ^(/opt|/usr) ]]; then
-        # System path - needs sudo
-        sudo mv "$ONNX_DIR" "$ONNX_INSTALL_PATH"
+        # G1 原有系统安装仍注册全局链接和动态库目录；单独安装新版本不修改这些设置。
         sudo ln -sf "$ONNX_INSTALL_PATH/lib/libonnxruntime.so" /usr/local/lib/ 2>/dev/null || true
         sudo ln -sf "$ONNX_INSTALL_PATH/include" /usr/local/include/onnxruntime 2>/dev/null || true
         echo "$ONNX_INSTALL_PATH/lib" | sudo tee /etc/ld.so.conf.d/onnxruntime.conf
         sudo ldconfig
     else
-        # User path - no sudo needed
-        mv "$ONNX_DIR" "$ONNX_INSTALL_PATH"
-        # Create user-accessible symlinks if possible
+        # G1 原有用户目录安装仅在具备权限时创建兼容链接。
         if [ -w /usr/local/lib ]; then
             ln -sf "$ONNX_INSTALL_PATH/lib/libonnxruntime.so" /usr/local/lib/ 2>/dev/null || true
         fi
