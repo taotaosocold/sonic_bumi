@@ -5,7 +5,7 @@
 
 每条序列从第一帧参考状态初始化，仅回放一次，不切片、不添加观测噪声或
 域随机化。全程根高误差不超过阈值且状态有限、到达最后一帧即成功；
-失败序列的名称会打印到终端，并写入 challenging_names.txt。
+失败序列的名称、失败原因和帧号会打印到终端，并写入 challenging_names.txt。
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ class Args:
     """最多评测多少条源动作；不指定时评测全部。按清单顺序或路径字典序选择。"""
 
     output_dir: Path | None = None
-    """评测结果目录；保存每条完整序列的结果、失败名称和源动作清单。"""
+    """评测结果目录；保存完整序列结果、失败名称/原因/帧号和源动作清单。"""
 
     config: Path = DEFAULT_BUMI3_SIM2SIM_CONFIG
     """MuJoCo sim2sim 契约配置。"""
@@ -439,8 +439,13 @@ def main(args: Args) -> None:
             if record["success"]:
                 continue
 
-            print(f"BUMI3_CHALLENGING_MOTION={source.motion.name}", flush=True)
-            names.write(source.motion.name + "\n")
+            failure_line = (
+                f"{source.motion.name} "
+                f"reason={record['termination_reason']} "
+                f"failure_frame={record['failure_frame']}"
+            )
+            print(f"BUMI3_CHALLENGING_MOTION={failure_line}", flush=True)
+            names.write(failure_line + "\n")
             names.flush()
             entry: dict[str, object] = {
                 "name": source.motion.name,

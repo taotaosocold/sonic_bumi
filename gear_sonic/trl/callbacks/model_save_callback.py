@@ -105,13 +105,13 @@ class ModelSaveCallback(TrainerCallback):
                         except (KeyError, TypeError, ValueError):
                             continue
                         if value > getattr(self, f"best_{name}"):
-                            best_path = self.save_dir / f"best_{name}.pt"
+                            best_path = self.save_dir / f"model_step_best_{name}.pt"
                             temp_path = best_path.with_suffix(".pt.tmp")
                             shutil.copy2(checkpoint_path, temp_path)
                             os.replace(temp_path, best_path)
                             setattr(self, f"best_{name}", value)
                             logger.info(
-                                f"Updated best_{name}.pt at step {state.global_step}: {value:.6f}"
+                                f"Updated {best_path.name} at step {state.global_step}: {value:.6f}"
                             )
 
     def get_example_obs(self, env):

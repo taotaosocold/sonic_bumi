@@ -4644,3 +4644,8 @@ Hydra 会把整个文件内容放进嵌套包，`manager_env` 覆盖根本不会
 
 - 扩展 `ModelSaveCallback`：在现有定期 checkpoint 节点（默认每 2,000 步）比较 `objective/rewards` 与 `objective/length`。任一指标超过历史最佳值时，将该步的完整训练 checkpoint 原子覆盖到 `best_reward.pt` 或 `best_length.pt`；原有 `model_step_*.pt` 与 `last.pt` 保存规则不变。
 - 这里的奖励和长度使用训练日志统计值，即最近最多 100 个已完成 episode 的平均累计奖励和平均长度，不是单个 episode 的最大值。最佳值在当前训练进程中比较。
+
+## 2026-10-12：最佳 checkpoint 文件名统一前缀
+
+- 最佳奖励模型保存为 `model_step_best_reward.pt`，最长 episode 模型保存为 `model_step_best_length.pt`；保存日志同步显示新文件名。
+- 自动评测器仅扫描 `model_step_<数字步数>.pt`，避免将最佳模型别名的 `reward` / `length` 解析为数字步数而报错。最佳模型仍可通过显式 checkpoint 路径加载。

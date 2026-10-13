@@ -325,13 +325,13 @@ class CheckpointEvaluator:
         logger.info(f"Found {len(self.evaluated_checkpoints)} already evaluated checkpoints")
 
     def find_checkpoints(self) -> list[Path]:
-        """Find all checkpoint files in the experiment directory."""
-        checkpoint_pattern = str(self.experiment_dir / "model_step_*.pt")
-        checkpoints = sorted(
-            [Path(p) for p in glob.glob(checkpoint_pattern)],
-            key=lambda p: int(p.stem.split("_")[-1]),
-        )
-        return checkpoints
+        """Find numbered checkpoints; best-model aliases have no step in their names."""
+        checkpoints = [
+            path
+            for path in self.experiment_dir.glob("model_step_*.pt")
+            if path.is_file() and path.stem.removeprefix("model_step_").isdigit()
+        ]
+        return sorted(checkpoints, key=lambda path: int(path.stem.removeprefix("model_step_")))
 
     def is_checkpoint_ready(self, checkpoint_path: Path) -> bool:
         """Check if a checkpoint is ready for evaluation (not being written)."""
