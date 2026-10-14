@@ -450,7 +450,9 @@ class DeploymentConfigParser {
     for (const auto& name : names) {
       const auto& mapping = mappings.at(name.get<std::string>());
       const double direction = mapping.at("direction"), offset = mapping.at("offset");
-      if ((direction != 1 && direction != -1) || !std::isfinite(offset) || !actuators.insert(mapping.at("actuator")).second)
+      // 驱动器名称在 JSON 中是字符串，显式提取后插入集合，避免隐式转换导致 insert 重载歧义。
+      if ((direction != 1 && direction != -1) || !std::isfinite(offset) ||
+          !actuators.insert(mapping.at("actuator").get<std::string>()).second)
         throw std::runtime_error("Invalid SDK actuator mapping");
       result.push_back(mapping);
     }
