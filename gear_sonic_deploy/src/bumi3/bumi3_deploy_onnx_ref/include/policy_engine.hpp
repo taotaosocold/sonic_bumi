@@ -43,7 +43,7 @@ class PolicyEngine {
     policy_input_buffer_.assign(input_dimension_, 0);
     action_buffer_.assign(21, 0);
     if (provider != "cpu") {
-      // 首次 GPU 推理可能构建 TensorRT 引擎、分配设备内存和捕获图；在连接机器人前预热。
+      // 首次 GPU 推理可能构建 TensorRT 引擎和分配设备内存；在连接机器人前预热，默认关闭图捕获。
       // 此处的零输入只初始化会话，不进入观测历史，也不会发送任何机器人命令。
       Infer(20.0);
       Infer(20.0);
@@ -102,7 +102,7 @@ class PolicyEngine {
         << "_in" << std::dec << dimension << "_gpu" << settings.value("device_id", 0)
         << (settings.value("fp16", false) ? "_fp16" : "_fp32")
         << "_ws" << settings.value("workspace_size_mb", 1024)
-        << (settings.value("cuda_graph", true) ? "_graph" : "_nograph");
+        << (settings.value("cuda_graph", false) ? "_graph" : "_nograph");
     return key.str();
   }
 
@@ -131,7 +131,7 @@ class PolicyEngine {
                         {"trt_engine_cache_enable", "1"}, {"trt_engine_cache_path", cache.string()},
                         {"trt_timing_cache_enable", "1"}, {"trt_timing_cache_path", cache.string()},
                         {"trt_force_timing_cache", "0"},
-                        {"trt_cuda_graph_enable", settings.value("cuda_graph", true) ? "1" : "0"}});
+                        {"trt_cuda_graph_enable", settings.value("cuda_graph", false) ? "1" : "0"}});
       options.AppendExecutionProvider_TensorRT_V2(*static_cast<OrtTensorRTProviderOptionsV2*>(tensor_rt));
       std::cout << "BUMI3_TENSORRT_CACHE=" << cache.string() << '\n';
     }

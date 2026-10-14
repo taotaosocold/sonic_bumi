@@ -328,10 +328,11 @@ class DeploymentConfigParser {
     if (!std::isfinite(value) || value <= 0) throw std::runtime_error(name + " must be finite and positive");
   }
 
-  // 与 G1 一样默认选择 TensorRT、GPU 0、FP32 和 CUDA Graph；配置文件和显式命令行参数可覆盖。
+  // 与 G1 一样默认选择 TensorRT、GPU 0 和 FP32；配置文件和显式命令行参数可覆盖。
+  // 当前会话没有固定设备输入输出绑定，默认关闭 CUDA Graph，避免图回放跳过临时输出分配。
   // 缺少 inference 配置时仍使用 GPU 默认值，防止旧配置静默切回 CPU；训练控制契约不参与更改。
   Json ReadInference() const {
-    Json settings{{"provider", "tensorrt"}, {"device_id", 0}, {"fp16", false}, {"cuda_graph", true},
+    Json settings{{"provider", "tensorrt"}, {"device_id", 0}, {"fp16", false}, {"cuda_graph", false},
                   {"engine_cache_dir", ".local/bumi3/tensorrt"}, {"workspace_size_mb", 1024}};
     if (deploy_["inference"]) {
       const auto overrides = ToJson(deploy_["inference"]);

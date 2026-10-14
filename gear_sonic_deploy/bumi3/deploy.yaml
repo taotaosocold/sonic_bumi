@@ -14,8 +14,9 @@ inference:
   device_id: 0
   # 与 G1 的 --policy-fp16 对应，仅 TensorRT 模式使用；模型输入输出仍为 float32。
   fp16: false
-  # TensorRT 在初始化预热时捕获 CUDA Graph，首次引擎构建不会进入 50 Hz 控制循环。
-  cuda_graph: true
+  # 当前 ONNX Runtime 推理使用 CPU 输入和临时输出，尚未绑定 CUDA Graph 所需的固定设备缓冲区。
+  # 默认关闭图捕获以保证普通启动可用；TensorRT GPU 推理和引擎缓存仍保持启用。
+  cuda_graph: false
   engine_cache_dir: .local/bumi3/tensorrt
   workspace_size_mb: 1024
 ros2:

@@ -63,15 +63,22 @@ if [[ "$ROBOT_TYPE" == bumi3 ]]; then
     esac
     ORT_ROOT="${ONNX_INSTALL_PATH:-${onnxruntime_ROOT:-$ORT_DEFAULT}}"
     ORT_ROOT="$(realpath -m "$ORT_ROOT")"
-    # 与 G1 的环境设置一样支持 TensorRT_ROOT 和常见的 TensorRT 安装目录；系统包通过动态链接器查找。
-    # 同时加载 CUDA_HOME/CUDA_PATH 下的运行库，以支持使用安装包部署 CUDA 的目标机器。
+    # 在控制程序的进程环境内加载 GPU 运行库，避免每次新开终端都要手动 export。
+    # 支持系统安装、仓库内解压的 deb 包和 TensorRT 安装包；所有仓库路径均根据脚本位置计算。
     if [[ "$BUMI_ORT_VARIANT" == gpu ]]; then
         if [[ -z "${TensorRT_ROOT:-}${TENSORRT_ROOT:-}" && -d "$HOME/TensorRT/lib" ]]; then
             export TensorRT_ROOT="$HOME/TensorRT"
         fi
-        for BUMI_GPU_ROOT in "${TensorRT_ROOT:-${TENSORRT_ROOT:-}}" "${CUDA_HOME:-${CUDA_PATH:-/usr/local/cuda}}"; do
+        BUMI_GPU_ARCH="$(uname -m)"
+        [[ "$BUMI_GPU_ARCH" != arm64 ]] || BUMI_GPU_ARCH=aarch64
+        # 后加入的目录具有更高优先级：用户指定的 TensorRT 根目录优先于仓库本地依赖。
+        # 本地解压目录不写入系统配置，也不修改其他终端或仓库使用的 GPU 库路径。
+        for BUMI_GPU_ROOT in "${CUDA_HOME:-${CUDA_PATH:-/usr/local/cuda}}" \
+            "$REPO_ROOT/.local/bumi3/tensorrt-sdk" "${TensorRT_ROOT:-${TENSORRT_ROOT:-}}"; do
             [[ -n "$BUMI_GPU_ROOT" ]] || continue
-            for BUMI_GPU_LIB_DIR in "$BUMI_GPU_ROOT/lib" "$BUMI_GPU_ROOT/lib64"; do
+            for BUMI_GPU_LIB_DIR in "$BUMI_GPU_ROOT/lib" "$BUMI_GPU_ROOT/lib64" \
+                "$BUMI_GPU_ROOT/targets/$BUMI_GPU_ARCH-linux/lib" \
+                "$BUMI_GPU_ROOT/usr/lib/$BUMI_GPU_ARCH-linux-gnu"; do
                 if [[ -d "$BUMI_GPU_LIB_DIR" ]]; then
                     export LD_LIBRARY_PATH="$BUMI_GPU_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
                 fi
