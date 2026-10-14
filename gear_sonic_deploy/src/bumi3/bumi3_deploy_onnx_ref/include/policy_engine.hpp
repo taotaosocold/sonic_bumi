@@ -21,7 +21,7 @@ class PolicyEngine {
     options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
     options.AddConfigEntry("session.intra_op.allow_spinning", "0");
     options.AddConfigEntry("session.inter_op.allow_spinning", "0");
-    const auto provider = settings.value("provider", std::string("cpu"));
+    const auto provider = settings.value("provider", std::string("tensorrt"));
     ConfigureProviders(options, settings, path);
     session_ = std::make_unique<Ort::Session>(env_, path.c_str(), options);
     if (session_->GetInputCount() != 1 || session_->GetOutputCount() != 1)
@@ -107,7 +107,7 @@ class PolicyEngine {
   }
 
   void ConfigureProviders(Ort::SessionOptions& options, const Json& settings, const std::string& path) {
-    const auto provider = settings.value("provider", std::string("cpu"));
+    const auto provider = settings.value("provider", std::string("tensorrt"));
     const int device = settings.value("device_id", 0);
     const int workspace = settings.value("workspace_size_mb", 1024);
     if (device < 0 || workspace < 1 || workspace > 65536)

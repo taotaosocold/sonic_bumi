@@ -11,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# BUMI3 follows the same entry point with a lightweight native deployment stack.
+# BUMI3 使用同一个安装入口准备 MuJoCo 环境与原生控制端，默认选择 GPU 推理 SDK。
 if [[ "${1:-}" == "--robot-type" && "${2:-}" == "bumi3" ]]; then
     # ROS Python extension modules must match the environment's Python ABI.
     bash "$REPO_ROOT/gear_sonic_deploy/scripts/setup_bumi3_ros2.sh" sim
@@ -21,12 +21,15 @@ if [[ "${1:-}" == "--robot-type" && "${2:-}" == "bumi3" ]]; then
     "$VENV_PATH/bin/python" -m pip --version >/dev/null 2>&1 || "$VENV_PATH/bin/python" -m ensurepip --upgrade
     "$VENV_PATH/bin/python" -m pip install 'numpy==1.26.4' 'scipy==1.15.3' \
         'mujoco==3.15.0' 'onnxruntime==1.23.2' 'tyro==0.8.14' 'pyyaml>=6,<7' 'joblib>=1.3,<2' 'pyzmq>=25,<28'
-    # 原有仿真/离线工具使用 Python 包；C++ 策略通过 G1 的安装入口获取完整 SDK。
-    # Python 工具可以继续使用 CPU 包；C++ GPU 推理由 ONNX_VARIANT=gpu 选择的原生 SDK 提供。
-    # CPU/GPU SDK 分目录安装，已有环境不覆盖；CUDA、cuDNN、TensorRT 在目标机器单独配置。
-    BUMI_ORT_VARIANT="${ONNX_VARIANT:-cpu}"
-    BUMI_ORT_DEFAULT=/opt/onnxruntime/1.23.2
-    [[ "$BUMI_ORT_VARIANT" != gpu ]] || BUMI_ORT_DEFAULT=/opt/onnxruntime-gpu/1.23.2
+    # Python 包用于离线转换和 MuJoCo 环境端；策略默认由 C++ 控制端通过 TensorRT 在 GPU 上推理。
+    # BUMI3 默认安装 GPU SDK，并保留 ONNX_VARIANT=cpu 的显式调试选择；两种 SDK 分目录保存。
+    # CUDA、cuDNN 和 TensorRT 由目标部署机器配置，安装脚本不覆盖已有 SDK 或 GPU 运行库。
+    BUMI_ORT_VARIANT="${ONNX_VARIANT:-gpu}"
+    case "$BUMI_ORT_VARIANT" in
+        gpu) BUMI_ORT_DEFAULT=/opt/onnxruntime-gpu/1.23.2 ;;
+        cpu) BUMI_ORT_DEFAULT=/opt/onnxruntime/1.23.2 ;;
+        *) echo "ONNX_VARIANT must be gpu or cpu" >&2; exit 2 ;;
+    esac
     ONNX_VERSION=1.23.2 ONNX_VARIANT="$BUMI_ORT_VARIANT" \
         ONNX_INSTALL_PATH="${ONNX_INSTALL_PATH:-${onnxruntime_ROOT:-$BUMI_ORT_DEFAULT}}" \
         bash "$REPO_ROOT/gear_sonic_deploy/scripts/install_deps.sh" --onnxruntime-only

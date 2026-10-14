@@ -53,11 +53,31 @@ if [[ "$ROBOT_TYPE" == bumi3 ]]; then
     bash "$SCRIPT_DIR/scripts/setup_bumi3_ros2.sh" sim
     source "$SCRIPT_DIR/scripts/setup_bumi3_ros2.sh"
     # 与 G1 一样链接环境安装的 C++ SDK；自定义路径可通过安装参数或标准根目录变量指定。
-    # GPU SDK 通过环境选择，仍允许从任意安装目录构建；不把个人机器路径写入配置或代码。
-    ORT_DEFAULT=/opt/onnxruntime/1.23.2
-    [[ "${ONNX_VARIANT:-cpu}" != gpu ]] || ORT_DEFAULT=/opt/onnxruntime-gpu/1.23.2
+    # BUMI3 与 G1 一样面向 GPU 部署，默认链接带 CUDA/TensorRT 后端的 SDK。
+    # 显式指定 ONNX_VARIANT=cpu 时使用独立调试 SDK；不根据当前机器是否有显卡改变默认值。
+    BUMI_ORT_VARIANT="${ONNX_VARIANT:-gpu}"
+    case "$BUMI_ORT_VARIANT" in
+        gpu) ORT_DEFAULT=/opt/onnxruntime-gpu/1.23.2 ;;
+        cpu) ORT_DEFAULT=/opt/onnxruntime/1.23.2 ;;
+        *) echo "ONNX_VARIANT must be gpu or cpu" >&2; exit 2 ;;
+    esac
     ORT_ROOT="${ONNX_INSTALL_PATH:-${onnxruntime_ROOT:-$ORT_DEFAULT}}"
     ORT_ROOT="$(realpath -m "$ORT_ROOT")"
+    # 与 G1 的环境设置一样支持 TensorRT_ROOT 和常见的 TensorRT 安装目录；系统包通过动态链接器查找。
+    # 同时加载 CUDA_HOME/CUDA_PATH 下的运行库，以支持使用安装包部署 CUDA 的目标机器。
+    if [[ "$BUMI_ORT_VARIANT" == gpu ]]; then
+        if [[ -z "${TensorRT_ROOT:-}${TENSORRT_ROOT:-}" && -d "$HOME/TensorRT/lib" ]]; then
+            export TensorRT_ROOT="$HOME/TensorRT"
+        fi
+        for BUMI_GPU_ROOT in "${TensorRT_ROOT:-${TENSORRT_ROOT:-}}" "${CUDA_HOME:-${CUDA_PATH:-/usr/local/cuda}}"; do
+            [[ -n "$BUMI_GPU_ROOT" ]] || continue
+            for BUMI_GPU_LIB_DIR in "$BUMI_GPU_ROOT/lib" "$BUMI_GPU_ROOT/lib64"; do
+                if [[ -d "$BUMI_GPU_LIB_DIR" ]]; then
+                    export LD_LIBRARY_PATH="$BUMI_GPU_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                fi
+            done
+        done
+    fi
     # 编译与运行必须选中同一个 SDK，避免 G1 环境的旧 CPU 动态库覆盖新 GPU 后端。
     export LD_LIBRARY_PATH="$ORT_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     BUILD_DIR="$SCRIPT_DIR/build/bumi3"

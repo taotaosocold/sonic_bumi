@@ -117,7 +117,7 @@ struct DeployOptions {
                  "  --input-type keyboard|zmq\n"
                  "  --zmq-url URL | --zmq-host HOST --zmq-port PORT\n"
                  "  --zmq-topic TOPIC       packed SMPL topic\n"
-                 "  --provider cpu|cuda|tensorrt  inference backend (overrides YAML)\n"
+                 "  --provider tensorrt|cuda|cpu  inference backend (default: tensorrt; overrides YAML)\n"
                  "  --gpu-device INDEX      visible GPU index, default 0\n"
                  "  --policy-fp16           enable TensorRT FP16 (G1-style option)\n"
                  "  --policy-fp32           override YAML and use TensorRT FP32\n"
@@ -328,9 +328,10 @@ class DeploymentConfigParser {
     if (!std::isfinite(value) || value <= 0) throw std::runtime_error(name + " must be finite and positive");
   }
 
-  // 配置文件提供目标机器的后端默认值，命令行仅覆盖显式给出的项目；训练控制契约不参与更改。
+  // 与 G1 一样默认选择 TensorRT、GPU 0、FP32 和 CUDA Graph；配置文件和显式命令行参数可覆盖。
+  // 缺少 inference 配置时仍使用 GPU 默认值，防止旧配置静默切回 CPU；训练控制契约不参与更改。
   Json ReadInference() const {
-    Json settings{{"provider", "cpu"}, {"device_id", 0}, {"fp16", false}, {"cuda_graph", true},
+    Json settings{{"provider", "tensorrt"}, {"device_id", 0}, {"fp16", false}, {"cuda_graph", true},
                   {"engine_cache_dir", ".local/bumi3/tensorrt"}, {"workspace_size_mb", 1024}};
     if (deploy_["inference"]) {
       const auto overrides = ToJson(deploy_["inference"]);
