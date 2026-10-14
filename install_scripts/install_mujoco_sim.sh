@@ -17,7 +17,17 @@ if [[ "${1:-}" == "--robot-type" && "${2:-}" == "bumi3" ]]; then
     bash "$REPO_ROOT/gear_sonic_deploy/scripts/setup_bumi3_ros2.sh" sim
     VENV_PATH="${BUMI_DEPLOY_VENV:-$REPO_ROOT/.venv_sim}"
     PYTHON_COMMAND="${BUMI_INSTALL_PYTHON:-${BUMI_ROS_PYTHON:-/usr/bin/python3}}"
-    [[ -x "$VENV_PATH/bin/python" ]] || "$PYTHON_COMMAND" -m venv "$VENV_PATH"
+    # 解释器存在并不代表环境创建完整；中断的创建过程或不完整复制可能缺少配置文件、激活脚本。
+    # 缺少任一必要文件时复用原目录补齐环境，不使用 --clear，保留已经安装的 Python 依赖。
+    # pip 由下方的检查单独补装，修复激活脚本时不重新引导或升级已有 pip。
+    if [[ ! -x "$VENV_PATH/bin/python" || ! -f "$VENV_PATH/pyvenv.cfg" || ! -r "$VENV_PATH/bin/activate" ]]; then
+        "$PYTHON_COMMAND" -m venv --without-pip "$VENV_PATH"
+    fi
+    # 修复后再次核对启动所需文件，避免只有 pip 安装成功就把不完整环境报告为可用。
+    [[ -x "$VENV_PATH/bin/python" && -f "$VENV_PATH/pyvenv.cfg" && -r "$VENV_PATH/bin/activate" ]] || {
+        echo "Incomplete BUMI3 virtual environment: $VENV_PATH" >&2
+        exit 2
+    }
     "$VENV_PATH/bin/python" -m pip --version >/dev/null 2>&1 || "$VENV_PATH/bin/python" -m ensurepip --upgrade
     "$VENV_PATH/bin/python" -m pip install 'numpy==1.26.4' 'scipy==1.15.3' \
         'mujoco==3.15.0' 'onnxruntime==1.23.2' 'tyro==0.8.14' 'pyyaml>=6,<7' 'joblib>=1.3,<2' 'pyzmq>=25,<28'
