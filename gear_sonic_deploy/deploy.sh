@@ -155,8 +155,10 @@ if [[ "$ROBOT_TYPE" == bumi3 ]]; then
                 fi
             done
             # 硬件桥不接收键盘输入；认证已由 sudo -v 完成，后台启动禁止再次读取终端密码。
-            # 隔离标准输入，避免后台桥与前台策略争用操作键；日志仍输出到当前终端。
-            sudo -n env "${BRIDGE_ENV[@]}" "${BRIDGE_COMMAND[@]}" </dev/null &
+            # 仅重定向标准输入仍可能让 sudo 经 /dev/tty 转发按键并修改终端模式。
+            # 将日志接入管道，使 sudo 按管道任务运行，由 cat 将日志原样送回当前终端；
+            # 保持 sudo 本身为后台任务，BRIDGE_PID 仍用于原有的桥进程清理流程。
+            sudo -n env "${BRIDGE_ENV[@]}" "${BRIDGE_COMMAND[@]}" </dev/null > >(cat) 2>&1 &
         else
             "${BRIDGE_COMMAND[@]}" </dev/null &
         fi
