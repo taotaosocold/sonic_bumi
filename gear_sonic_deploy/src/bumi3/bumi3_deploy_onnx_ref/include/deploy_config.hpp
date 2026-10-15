@@ -208,12 +208,13 @@ class DeploymentConfigParser {
       const auto robot = YAML::LoadFile((root / "config/robot.yaml").string());
       YAML::Node params, node;
       node["robot_name"] = "bumi3"; node["robot_root"] = root.string();
-      node["control_frequency_hz"] = runtime.at("io_frequency").get<double>();
-      node["command_timeout"] = runtime.at("command_timeout").get<double>();
+      node["control_frequency_hz"] = RosDouble(runtime.at("io_frequency").get<double>());
+      node["command_timeout"] = RosDouble(runtime.at("command_timeout").get<double>());
       std::map<std::string, double> efforts;
       const auto& names = runtime.at("contract").at("policy_joint_names");
       for (std::size_t i = 0; i < names.size(); ++i) efforts[names[i].get<std::string>()] = runtime.at("contract").at("effort_policy")[i];
-      for (const auto& name : robot["robot"]["joint_order"]) node["effort_limits"].push_back(efforts.at(name.as<std::string>()));
+      for (const auto& name : robot["robot"]["joint_order"])
+        node["effort_limits"].push_back(RosDouble(efforts.at(name.as<std::string>())));
       params["/**"]["ros__parameters"] = node;
       const auto params_path = directory / "bridge_params.yaml";
       WriteYaml(params_path, params);
@@ -230,6 +231,14 @@ class DeploymentConfigParser {
   }
 
  private:
+  // yaml-cpp 默认会把整数值的 double 写成 1000，ROS 2 随即将其识别为整数参数。
+  // 使用 JSON 的浮点文本构造普通 YAML 标量，保留 1000.0 等小数或指数形式，避免改变参数类型。
+  // 标量不加引号，也不依赖 ROS 2 参数解析器忽略的 YAML 类型标签；数组元素同样适用。
+  static YAML::Node RosDouble(double value) {
+    if (!std::isfinite(value)) throw std::runtime_error("ROS2 floating-point parameter must be finite");
+    return YAML::Node(Json(value).dump());
+  }
+
   static Json ReadJson(const fs::path& path) {
     std::ifstream stream(path);
     if (!stream) throw std::runtime_error("Cannot open " + path.string());
