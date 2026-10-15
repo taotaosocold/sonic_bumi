@@ -63,7 +63,7 @@ class Bumi3Deploy {
       live_pose_snapshot_ = frozen_pose_;
     }
     program_state_ = ProgramState::INIT;
-    std::cout << "BUMI3_CONTROL_READY native_cpp: ] enable / T play-pause / P next / R restart / ENTER offline-live / O stop\n";
+    std::cout << "BUMI3_CONTROL_READY native_cpp: ] prepare-pose (real) / T start-policy/play-pause / P next / R restart / ENTER offline-live / O stop\n";
   }
 
   void Run() {
@@ -429,11 +429,13 @@ class Bumi3Deploy {
       motor_command_buffer_ = std::move(command);
       return true;
     }
-    ResetObservationHistory();
-    UpdateHeadingState();
+    // 姿态过渡完成只进入 PD 保持，不沿用按 ] 设置的启动标志自动运行策略。
+    // 保留最后一帧目标，由 LowCommandWriter 持续下发；只有之后按 T 才允许策略接管。
+    operator_state.start = false;
+    operator_state.play = false;
     program_state_ = ProgramState::WAIT_FOR_CONTROL;
     entry_started_ = false;
-    std::cout << "BUMI3_REAL_ENABLED: press T\n";
+    std::cout << "BUMI3_REAL_HOLDING: preparation pose held; policy inactive; press T to start policy and motion" << std::endl;
     return true;
   }
 
@@ -456,6 +458,7 @@ class Bumi3Deploy {
       if (key == ']' && real_ && !enabled_) {
         std::cout << "BUMI3_ENABLE_KEY_RECEIVED: requesting enable and entry pose" << std::endl;
         operator_state.start = true;
+        operator_state.play = false;
         program_state_ = ProgramState::INIT;
       } else if (key == 'T') {
         if (real_ && !enabled_) { std::cout << "Press ] before playing\n"; continue; }
@@ -475,6 +478,10 @@ class Bumi3Deploy {
           program_state_ = ProgramState::INIT;
         }
         operator_state.play = !operator_state.play;
+        // 真机保持准备姿态时，T 才设置独立的策略启动请求；播放状态本身不触发自动接管。
+        // 进入 CONTROL 后，T 继续仅切换参考播放，保留原有的暂停与恢复行为。
+        if (real_ && program_state_ == ProgramState::WAIT_FOR_CONTROL)
+          operator_state.start = operator_state.play;
       } else if ((key == 'P' || key == 'R') && !live_) {
         backend_->Disable();
         enabled_ = false;
@@ -551,7 +558,15 @@ class Bumi3Deploy {
         if (!InitControl()) throw std::runtime_error("BUMI3 InitControl failed");
         break;
       case ProgramState::WAIT_FOR_CONTROL:
+        // 没有新的启动请求就保留最后的 PD 目标，不采集策略观测、不推理，也不推进参考帧。
+        // 真机在 T 触发接管时重新初始化历史与朝向，避免使用漫长保持阶段之前的状态。
         if (operator_state.start) {
+          if (real_) {
+            if (!enabled_) throw std::runtime_error("Prepare pose with ] before starting policy");
+            ResetObservationHistory();
+            UpdateHeadingState();
+            std::cout << "BUMI3_POLICY_STARTED: policy control and reference playback active" << std::endl;
+          }
           operator_state.start = false;
           program_state_ = ProgramState::CONTROL;
         }
