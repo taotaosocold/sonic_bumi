@@ -454,6 +454,7 @@ class Bumi3Deploy {
       // 与 G1 的 INIT 状态对应，进入姿态期间仅处理停止，不允许切换正在过渡的参考。
       if (real_ && entry_started_) continue;
       if (key == ']' && real_ && !enabled_) {
+        std::cout << "BUMI3_ENABLE_KEY_RECEIVED: requesting enable and entry pose" << std::endl;
         operator_state.start = true;
         program_state_ = ProgramState::INIT;
       } else if (key == 'T') {

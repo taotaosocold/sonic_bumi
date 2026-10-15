@@ -154,9 +154,11 @@ if [[ "$ROBOT_TYPE" == bumi3 ]]; then
                     BRIDGE_ENV+=("$BUMI_ROS_ENV_NAME=${!BUMI_ROS_ENV_NAME}")
                 fi
             done
-            sudo env "${BRIDGE_ENV[@]}" "${BRIDGE_COMMAND[@]}" &
+            # 硬件桥不接收键盘输入；认证已由 sudo -v 完成，后台启动禁止再次读取终端密码。
+            # 隔离标准输入，避免后台桥与前台策略争用操作键；日志仍输出到当前终端。
+            sudo -n env "${BRIDGE_ENV[@]}" "${BRIDGE_COMMAND[@]}" </dev/null &
         else
-            "${BRIDGE_COMMAND[@]}" &
+            "${BRIDGE_COMMAND[@]}" </dev/null &
         fi
         BRIDGE_PID=$!
     fi
