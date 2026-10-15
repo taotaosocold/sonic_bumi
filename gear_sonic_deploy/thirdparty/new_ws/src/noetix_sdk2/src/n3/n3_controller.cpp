@@ -1,4 +1,4 @@
-#include "noetix/hardware/n3/n3_controller.hpp"
+#include "n3_controller.hpp"
 
 #include <cmath>
 #include <cstdint>

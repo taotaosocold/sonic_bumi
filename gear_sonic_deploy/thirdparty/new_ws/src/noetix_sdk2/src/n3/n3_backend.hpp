@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "noetix/hardware/hardware_backend.hpp"
-#include "noetix/hardware/n3/n3_controller.hpp"
+#include "n3_controller.hpp"
 
 namespace noetix
 {
@@ -38,23 +38,36 @@ struct EthercatConfig
     bool enable_dc{false};
 };
 
+struct N3JointCalibration
+{
+    int direction{1};
+    double bias{0.0};
+};
+
 struct HardwareConfig
 {
     EthercatConfig ethercat;
     std::vector<CanuConfig> canus;
     std::vector<std::string> actuator_order;
+    std::vector<N3JointCalibration> calibration;
 
 
     // 诊断只读模式：
     // - 允许部分 actuator 无反馈时 backend 继续上线；
     // - 强制禁止 EnableAllActuator；
-    // - write() 永远只下发 q/dq/tau/kp/kd = 0 的安全 MIT 命令；
+    // - write() 不调用 SetMitCmd，保持电机 DISABLE；
     // - 主要用于排查单条 CAN 通道、RViz、joint_states。
     bool diagnostic_read_only{false};
 };
 
 /**
  * @brief N3 real hardware backend.
+ *
+ * 实机坐标与旧 N3HW 对齐：
+ * - 从 noetix_robots/n3/config/robot.yaml 的 joints 读取 direction/offset；
+ *   兼容旧 hardware.yaml 的 actuator_list，且双配置不一致时拒绝启动。
+ * - 复用旧 N3HW 的 Chebyshev 并联踝正解、雅可比及命令转换。
+ * - 禁止在未请求 ENABLE 时调用 SetMitCmd（原厂接口可能自动使能）。
  *
  * 严格跟随原厂 N3HW 周期语义：
  *
@@ -75,7 +88,7 @@ struct HardwareConfig
  * - 无效关节使用最后一次有效位置；若启动后从未有效则使用 0 rad；
  * - 无效关节速度/力矩强制为 0；
  * - 电机绝不自动 enable；
- * - 不论上层给什么命令，write() 都只发送零 MIT 命令。
+ * - 不论上层给什么命令，write() 都只发送 DISABLE 并维持 EtherCAT 通信。
  */
 class N3Backend final : public HardwareBackend
 {
@@ -95,7 +108,9 @@ public:
     bool write(const std::vector<ActuatorCmd>& command) override;
 
 private:
+    struct AnkleRuntime;
     bool setupHardware();
+    void queueDisable();
 
     /** 仅设置 q/dq/tau/kp/kd=0，不执行 EtherCAT exchange。 */
     void setZeroMitCommand();
@@ -140,6 +155,8 @@ private:
     std::string primary_imu_name_;
     ImuState imu_state_{};
     bool imu_configured_{false};
+    std::unique_ptr<AnkleRuntime> ankle_;
+    bool ankle_feedback_ready_{false};
 };
 
 }  // namespace noetix

@@ -5,7 +5,7 @@
 #include <utility>
 
 #if NOETIX_HAS_N3_HW
-#include "noetix/hardware/n3/n3_backend.hpp"
+#include "n3/n3_backend.hpp"
 #endif
 #if NOETIX_HAS_BUMI_HW
 #include "noetix/hardware/bumi/bumi_backend.hpp"
@@ -22,7 +22,12 @@ bool MappedRobot::createBackend() {
     backend_ = std::make_unique<N3Backend>();
     return true;
 #else
-    std::cerr << "[MappedRobot] N3 real-hardware backend was not built." << std::endl;
+    std::cerr << "[MappedRobot] N3 real-hardware backend was not built: "
+              << NOETIX_N3_HW_UNAVAILABLE_REASON << '\n'
+              << "[MappedRobot] Install the matching N3 vendor archive and headers, "
+                 "then rebuild noetix_sdk2 and noetix_bridge with "
+                 "-DNOETIX_REQUIRE_N3_HW=ON."
+              << std::endl;
     return false;
 #endif
   }

@@ -1,13 +1,17 @@
-#include "noetix/hardware/n3/n3_backend.hpp"
+#include "n3_backend.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iostream>
 #include <thread>
 #include <unordered_set>
+#include <unordered_map>
 #include <utility>
 
 #include <yaml-cpp/yaml.h>
+
+#include "parallel_ankle.hpp"
 
 namespace noetix
 {
@@ -22,7 +26,18 @@ constexpr double kRawZeroPositionTolerance = 1.0e-3;
 
 // ActuatorState::error 的本地诊断标志，不对应 vendor error code。
 constexpr std::uint32_t kFeedbackInvalidFlag = 0x80000000U;
+constexpr std::uint32_t kAnkleInvalidFlag = 0x40000000U;
+constexpr float kAnkleMaxFeedforward = 50.0F;
 }
+
+struct N3Backend::AnkleRuntime
+{
+    AnkleRuntime(std::size_t dof, int lp, int lr, int rp, int rr)
+        : solver(lp, lr, rp, rr), data(dof) {}
+
+    parallel_ankle::ParallelAnkle solver;
+    std::vector<MotorData> data;
+};
 
 N3Backend::N3Backend()
     : controller_(std::make_unique<N3Controller>())
@@ -67,6 +82,131 @@ bool N3Backend::configure(const RobotConfig& config)
             parsed.diagnostic_read_only = runtime["diagnostic_read_only"].as<bool>();
         }
 
+
+        // The canonical N3 calibration lives in the robot resource package:
+        //   noetix_robots/n3/config/robot.yaml -> joints[].direction/offset
+        // No second set of calibration values is required in hardware.yaml.
+        // Hardware-only actuator_list is accepted for older deployments, but
+        // if both are present their values must match exactly.
+        std::unordered_map<std::string, N3JointCalibration> calib_by_name;
+        const auto parse_calibration = [](const YAML::Node& records,
+                                          bool robot_mapping,
+                                          const std::string& source,
+                                          std::unordered_map<std::string, N3JointCalibration>& out) -> bool {
+            if (!records || !records.IsSequence() || records.size() == 0U) {
+                std::cerr << "[N3Backend] Missing calibration sequence in " << source << std::endl;
+                return false;
+            }
+            for (const auto& row : records) {
+                if (!row.IsMap() || !row["name"] ||
+                    !row["direction"] || !row[robot_mapping ? "offset" : "bias"] ||
+                    (robot_mapping && !row["actuator"])) {
+                    std::cerr << "[N3Backend] Incomplete calibration entry in "
+                              << source << std::endl;
+                    return false;
+                }
+                const std::string joint_name = row["name"].as<std::string>();
+                const std::string name = robot_mapping
+                    ? row["actuator"].as<std::string>() : joint_name;
+                if (name.empty() || joint_name.empty()) {
+                    std::cerr << "[N3Backend] Empty joint/actuator name in " << source << std::endl;
+                    return false;
+                }
+                // N3 joint and motor names currently match; guard against
+                // accidentally using a joint-space remapping as calibration.
+                if (robot_mapping && name != joint_name) {
+                    std::cerr << "[N3Backend] N3 joint name and actuator differ: "
+                              << joint_name << " / " << name << std::endl;
+                    return false;
+                }
+                const int direction = row["direction"].as<int>();
+                const double bias = row[robot_mapping ? "offset" : "bias"].as<double>();
+                if ((direction != 1 && direction != -1) || !std::isfinite(bias) ||
+                    !out.emplace(name, N3JointCalibration{direction, bias}).second) {
+                    std::cerr << "[N3Backend] Invalid/duplicate calibration for "
+                              << name << " in " << source << std::endl;
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        const YAML::Node actuator_list = root["actuator_list"];
+        const std::string robot_file = config.config_root + "/config/robot.yaml";
+        YAML::Node robot_root;
+        try {
+            robot_root = YAML::LoadFile(robot_file);
+        } catch (const YAML::BadFile&) {
+            // Only allow old, self-contained hardware.yaml as a fallback.
+            if (!actuator_list) {
+                std::cerr << "[N3Backend] Missing robot config " << robot_file
+                          << " and no legacy actuator_list in hardware.yaml."
+                          << std::endl;
+                return false;
+            }
+        }
+        const YAML::Node joints = robot_root ? robot_root["joints"] : YAML::Node();
+        if (joints) {
+            if (!parse_calibration(joints, true, robot_file, calib_by_name)) {
+                return false;
+            }
+            if (actuator_list) {
+                std::unordered_map<std::string, N3JointCalibration> old_calib;
+                if (!parse_calibration(actuator_list, false, file, old_calib)) return false;
+                if (old_calib.size() != calib_by_name.size()) {
+                    std::cerr << "[N3Backend] Calibration list counts conflict between "
+                              << robot_file << " and " << file << std::endl;
+                    return false;
+                }
+                for (const auto& item : calib_by_name) {
+                    const auto it = old_calib.find(item.first);
+                    if (it == old_calib.end() ||
+                        it->second.direction != item.second.direction ||
+                        it->second.bias != item.second.bias) {
+                        std::cerr << "[N3Backend] Calibration conflict for " << item.first
+                                  << " between robot.yaml and hardware.yaml." << std::endl;
+                        return false;
+                    }
+                }
+            }
+            std::cout << "[N3Backend] Joint calibration loaded from " << robot_file << std::endl;
+        } else if (actuator_list) {
+            if (!parse_calibration(actuator_list, false, file, calib_by_name)) {
+                return false;
+            }
+            std::cout << "[N3Backend] Legacy actuator_list calibration loaded from "
+                      << file << std::endl;
+        } else {
+            std::cerr << "[N3Backend] Missing joint calibration: expected 'joints' "
+                      << "in " << robot_file
+                      << " or legacy 'actuator_list' in " << file << std::endl;
+            return false;
+        }
+        for (const auto& name : parsed.actuator_order) {
+            const auto it = calib_by_name.find(name);
+            if (it == calib_by_name.end()) {
+                std::cerr << "[N3Backend] Missing direction/offset for " << name << std::endl;
+                return false;
+            }
+            parsed.calibration.push_back(it->second);
+        }
+        if (calib_by_name.size() != parsed.actuator_order.size()) {
+            std::cerr << "[N3Backend] Calibration name set differs from robot actuator_order."
+                      << std::endl;
+            return false;
+        }
+
+        // The old N3HW parallel ankle solver is mandatory for this model.
+        // Indices are resolved by name: config.actuator_order may be reordered.
+        const char* ankle_names[] = {"l_ankle_pitch_joint", "l_ankle_roll_joint",
+                                     "r_ankle_pitch_joint", "r_ankle_roll_joint"};
+        for (const char* ankle_name : ankle_names) {
+            if (calib_by_name.find(ankle_name) == calib_by_name.end()) {
+                std::cerr << "[N3Backend] Missing parallel ankle joint: "
+                          << ankle_name << std::endl;
+                return false;
+            }
+        }
 
         if (!root["ethercat"]) {
             std::cerr << "[N3Backend] Missing 'ethercat' node." << std::endl;
@@ -201,6 +341,16 @@ bool N3Backend::configure(const RobotConfig& config)
     hardware_config_ = std::move(parsed);
     dof_ = hardware_config_.actuator_order.size();
 
+    const auto index_of = [this](const char* name) -> int {
+        const auto& order = hardware_config_.actuator_order;
+        const auto it = std::find(order.begin(), order.end(), name);
+        return static_cast<int>(std::distance(order.begin(), it));
+    };
+    ankle_ = std::make_unique<AnkleRuntime>(
+        dof_, index_of("l_ankle_pitch_joint"), index_of("l_ankle_roll_joint"),
+        index_of("r_ankle_pitch_joint"), index_of("r_ankle_roll_joint"));
+    ankle_feedback_ready_ = false;
+
     feedback_valid_.assign(dof_, 0U);
     last_valid_state_.assign(dof_, ActuatorState{});
 
@@ -211,9 +361,8 @@ bool N3Backend::configure(const RobotConfig& config)
 
     if (!setupHardware()) return false;
 
-    std::cout << "[N3Backend] Hardware topology validated for " << dof_
-              << " actuators. Joint mapping is owned by robot.yaml / MappedRobot."
-              << std::endl;
+    std::cout << "[N3Backend] Hardware topology and direction/bias calibrated for "
+              << dof_ << " actuators. N3 parallel ankle enabled." << std::endl;
 
     configured_ = true;
     return true;
@@ -294,6 +443,13 @@ bool N3Backend::setupHardware()
     }
 
     return true;
+}
+
+// SetMitCmd in the original vendor driver may ENABLE a motor even with all
+// five MIT fields set to zero. Always queue DISABLE while the SDK is passive.
+void N3Backend::queueDisable()
+{
+    if (controller_) (void)controller_->disableAll();
 }
 
 void N3Backend::setZeroMitCommand()
@@ -385,11 +541,11 @@ std::size_t N3Backend::refreshFeedbackValidity(bool verbose)
             auto& cached =
                 last_valid_state_[i];
 
-            // Backend publishes raw actuator-space state.
-            // Robot layer owns joint direction/offset mapping.
-            cached.position = static_cast<float>(q_motor);
-            cached.velocity = static_cast<float>(dq_motor);
-            cached.torque = static_cast<float>(tau_motor);
+            // Preserve the original N3HW direction/bias conversions.
+            const auto& cal = hardware_config_.calibration[i];
+            cached.position = static_cast<float>(q_motor * cal.direction + cal.bias);
+            cached.velocity = static_cast<float>(dq_motor * cal.direction);
+            cached.torque = static_cast<float>(tau_motor * cal.direction);
             cached.temperature =
                 static_cast<float>(temperature);
             cached.error = 0U;
@@ -544,8 +700,9 @@ bool N3Backend::start()
     heart_count_ = 0;
     actuators_enabled_ = false;
 
-    // 启动阶段永远不加刚度/力矩。
-    setZeroMitCommand();
+    // Original N3 vendor SetMitCmd may implicitly enable a motor.
+    // Before explicit enableActuators(), use DisableAllActuator only.
+    queueDisable();
 
     const auto startup_period =
         std::chrono::nanoseconds(
@@ -607,8 +764,8 @@ bool N3Backend::start()
 
         std::cerr
             << "[N3Backend] DIAGNOSTIC READ-ONLY MODE ACTIVE. "
-            << "Actuators will NOT be enabled and all outgoing "
-            << "commands will be forced to zero MIT."
+            << "Actuators will NOT be enabled and motor "
+            << "commands will be forced to DISABLE."
             << std::endl;
     }
     else {
@@ -619,11 +776,22 @@ bool N3Backend::start()
             << std::endl;
     }
 
+    // A vendor library may implicitly enable on init. Refuse to expose a
+    // passive SDK while hardware reports the enabled state.
+    if (controller_->allActuatorsEnabled()) {
+        std::cerr << "[N3Backend] Drives still enabled after startup DISABLE."
+                  << std::endl;
+        queueDisable();
+        controller_->stageCommand();
+        controller_->runCycle();
+        return false;
+    }
+
     // ----------------------------------------------------------
     // 2. 诊断模式：无论反馈是否完整都绝不使能。
     // ----------------------------------------------------------
     if (hardware_config_.diagnostic_read_only) {
-        setZeroMitCommand();
+        queueDisable();
         controller_->setHeartCnt(++heart_count_);
         controller_->stageCommand();
         controller_->runCycle();
@@ -669,14 +837,19 @@ bool N3Backend::enableActuators()
     }
     if (actuators_enabled_) return true;
 
-    if (refreshFeedbackValidity(false) != dof_) {
-        std::cerr << "[N3Backend] Refuse ENABLE: not all actuator feedback is valid."
+    // Build one calibrated state frame before permitting enable. This also
+    // tests parallel-ankle FK safety in the actual motor configuration.
+    std::vector<ActuatorState> pre_enable_state(dof_);
+    if (!read(pre_enable_state) || !ankle_feedback_ready_) {
+        std::cerr << "[N3Backend] Refuse ENABLE: missing motor feedback or unsafe "
+                  << "parallel-ankle FK. Check calibration and ankle offsets."
                   << std::endl;
         dumpInvalidActuators();
         return false;
     }
 
-    setZeroMitCommand();
+    // Explicit ENABLE is the only place where the motor command path is opened.
+    // Request enable first; SetMitCmd must never be used in passive mode.
     const auto period = std::chrono::nanoseconds(hardware_config_.ethercat.cycle_time_ns);
 
     bool request_ok = true;
@@ -687,6 +860,7 @@ bool N3Backend::enableActuators()
                 break;
             }
         }
+        setZeroMitCommand();
         startupCycle();
         if (controller_->allActuatorsEnabled()) {
             actuators_enabled_ = true;
@@ -699,6 +873,9 @@ bool N3Backend::enableActuators()
         std::cerr << "[N3Backend] Runtime ENABLE was not confirmed by all actuators."
                   << std::endl;
         dumpActuatorDiagnostics();
+        queueDisable();
+        controller_->stageCommand();
+        controller_->runCycle();
         actuators_enabled_ = false;
         return false;
     }
@@ -712,23 +889,27 @@ bool N3Backend::enableActuators()
 bool N3Backend::disableActuators()
 {
     if (!started_ || !controller_) return false;
-    if (!actuators_enabled_) return true;
+    if (!actuators_enabled_) {
+        // Idempotent passive call. Still refresh the queued DISABLE request.
+        queueDisable();
+        controller_->stageCommand();
+        controller_->runCycle();
+        return true;
+    }
 
-    setZeroMitCommand();
-    startupCycle();
-
+    // Never call SetMitCmd after requesting disable. Vendor MIT setter may
+    // implicitly re-enable a drive, even when every command field is zero.
     const bool request_ok = controller_->disableAll();
     const auto period = std::chrono::nanoseconds(hardware_config_.ethercat.cycle_time_ns);
     for (int i = 0; i < 10; ++i) {
-        setZeroMitCommand();
-        startupCycle();
+        controller_->setHeartCnt(++heart_count_);
+        controller_->stageCommand();
+        controller_->runCycle();
+        controller_->fetchData();
         std::this_thread::sleep_for(period);
     }
-
     actuators_enabled_ = false;
-    if (request_ok) {
-        std::cout << "[N3Backend] Actuators DISABLED." << std::endl;
-    } else {
+    if (!request_ok) {
         std::cerr << "[N3Backend] DisableAllActuator() request failed." << std::endl;
     }
     return request_ok;
@@ -741,37 +922,12 @@ bool N3Backend::stop()
         actuators_enabled_ = false;
         return false;
     }
+    if (!started_) return true;
 
-    if (!started_) {
-        return true;
-    }
-
-    // 最终先发送零 MIT。
-    setZeroMitCommand();
-    controller_->setHeartCnt(++heart_count_);
-    controller_->stageCommand();
-    controller_->runCycle();
-    controller_->fetchData();
-
-    bool disable_ok = true;
-
-    if (actuators_enabled_) {
-        disable_ok =
-            controller_->disableAll();
-
-        // 发送 disable 请求并给驱动几个周期处理。
-        for (int i = 0; i < 10; ++i) {
-            setZeroMitCommand();
-            controller_->setHeartCnt(++heart_count_);
-            controller_->stageCommand();
-            controller_->runCycle();
-            controller_->fetchData();
-        }
-    }
-
+    // Stop must not send MIT: zero-MIT can itself trigger enable.
+    const bool disable_ok = disableActuators();
     started_ = false;
     actuators_enabled_ = false;
-
     return disable_ok;
 }
 
@@ -833,11 +989,11 @@ bool N3Backend::read(
             auto& cached =
                 last_valid_state_[i];
 
-            // Backend publishes raw actuator-space state.
-            // Robot layer owns joint direction/offset mapping.
-            cached.position = static_cast<float>(q_motor);
-            cached.velocity = static_cast<float>(dq_motor);
-            cached.torque = static_cast<float>(tau_motor);
+            // Preserve the original N3HW direction/bias conversions.
+            const auto& cal = hardware_config_.calibration[i];
+            cached.position = static_cast<float>(q_motor * cal.direction + cal.bias);
+            cached.velocity = static_cast<float>(dq_motor * cal.direction);
+            cached.torque = static_cast<float>(tau_motor * cal.direction);
             cached.temperature =
                 static_cast<float>(temperature);
             cached.error = 0U;
@@ -858,12 +1014,43 @@ bool N3Backend::read(
         }
     }
 
+    // Old N3HW converts the calibrated ankle motor states into task-space
+    // pitch/roll using FK + Jacobian. This has to run before the controller
+    // sees LowState, and before the same-cycle command transform.
+    for (std::size_t i = 0; i < dof_; ++i) {
+        auto& joint = ankle_->data[i];
+        joint.pos_ = state[i].position;
+        joint.vel_ = state[i].velocity;
+        joint.tau_ = state[i].torque;
+    }
+    ankle_->solver.parallel_ankle_solve_state(ankle_->data);
+    ankle_feedback_ready_ = ankle_->solver.is_motor_ready();
+
+    for (const char* name : {"l_ankle_pitch_joint", "l_ankle_roll_joint",
+                             "r_ankle_pitch_joint", "r_ankle_roll_joint"}) {
+        const auto it = std::find(hardware_config_.actuator_order.begin(),
+                                  hardware_config_.actuator_order.end(), name);
+        const std::size_t idx = static_cast<std::size_t>(
+            std::distance(hardware_config_.actuator_order.begin(), it));
+        state[idx].position = static_cast<float>(ankle_->data[idx].pos_);
+        state[idx].velocity = static_cast<float>(ankle_->data[idx].vel_);
+        state[idx].torque = static_cast<float>(ankle_->data[idx].tau_);
+        if (!ankle_feedback_ready_) state[idx].error |= kAnkleInvalidFlag;
+    }
+
     if (hardware_config_.diagnostic_read_only) {
         // 只要 EtherCAT backend 本身在线，允许部分反馈继续发布。
         return valid_count > 0U;
     }
 
-    // 正常控制模式要求全部反馈有效。
+    // Fail closed on a missing actuator. Do not allow the next policy frame
+    // to reuse a stale MIT command while the robot is partially disconnected.
+    if (valid_count != dof_ && actuators_enabled_) {
+        queueDisable();
+        controller_->stageCommand();
+        controller_->runCycle();
+        actuators_enabled_ = false;
+    }
     return valid_count == dof_;
 }
 
@@ -883,28 +1070,65 @@ bool N3Backend::write(const std::vector<ActuatorCmd>& command)
     if (!started_ || !controller_) return false;
 
     if (hardware_config_.diagnostic_read_only || !actuators_enabled_) {
-        setZeroMitCommand();
+        // A zero SetMitCmd is NOT a safe passive command with this vendor.
+        queueDisable();
         controller_->stageCommand();
         controller_->runCycle();
         return true;
     }
 
-    // Robot layer normally expands to a complete named frame. Enforce that
-    // here so a stale command can never silently remain in the vendor driver.
-    if (command.size() != dof_) return false;
-
+    if (command.size() != dof_) {
+        queueDisable();
+        actuators_enabled_ = false;
+        controller_->stageCommand();
+        controller_->runCycle();
+        return false;
+    }
     for (std::size_t i = 0; i < dof_; ++i) {
         const auto& cmd = command[i];
-        // Internal RT frames are expanded once into the configured stable
-        // actuator order. Checking equality is allocation-free.
-        if (cmd.name != hardware_config_.actuator_order[i]) return false;
-        controller_->setMitCmd(
-            cmd.name,
-            cmd.position,
-            cmd.velocity,
-            cmd.torque_ff,
-            cmd.kp,
-            cmd.kd);
+        if (cmd.name != hardware_config_.actuator_order[i] ||
+            !std::isfinite(cmd.position) || !std::isfinite(cmd.velocity) ||
+            !std::isfinite(cmd.torque_ff) || !std::isfinite(cmd.kp) ||
+            !std::isfinite(cmd.kd) || cmd.kp < 0.0 || cmd.kd < 0.0) {
+            queueDisable();
+            actuators_enabled_ = false;
+            controller_->stageCommand();
+            controller_->runCycle();
+            return false;
+        }
+        auto& j = ankle_->data[i];
+        j.pos_des_ = cmd.position;
+        j.vel_des_ = cmd.velocity;
+        j.ff_ = cmd.torque_ff;
+        j.kp_ = cmd.kp;
+        j.kd_ = cmd.kd;
+    }
+
+    // Original solver derives motor-space torque from task-space ankle PD
+    // error and its cached Jacobian; invalid ankles receive zero torque.
+    ankle_->solver.parallel_ankle_solve_cmd(ankle_->data);
+    for (std::size_t i = 0; i < dof_; ++i) {
+        const auto& cmd = command[i];
+        const auto& name = hardware_config_.actuator_order[i];
+        const auto& cal = hardware_config_.calibration[i];
+        const bool is_ankle =
+            name == "l_ankle_pitch_joint" || name == "l_ankle_roll_joint" ||
+            name == "r_ankle_pitch_joint" || name == "r_ankle_roll_joint";
+        if (is_ankle) {
+            // Match original N3HW ankle control: zero MIT gains and targets;
+            // transformed task-space PD becomes motor-space feedforward.
+            // +/- 50 is the old N3HW ankle torque clamp.
+            const float ff = ankle_feedback_ready_
+                ? std::clamp(static_cast<float>(ankle_->data[i].ff_),
+                             -kAnkleMaxFeedforward, kAnkleMaxFeedforward)
+                : 0.0F;
+            controller_->setMitCmd(name, 0.0, 0.0, ff * cal.direction, 0.0, 0.0);
+        } else {
+            controller_->setMitCmd(
+                name, (cmd.position - cal.bias) * cal.direction,
+                cmd.velocity * cal.direction, cmd.torque_ff * cal.direction,
+                cmd.kp, cmd.kd);
+        }
     }
 
     controller_->stageCommand();

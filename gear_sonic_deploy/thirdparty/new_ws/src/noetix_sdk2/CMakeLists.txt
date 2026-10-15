@@ -16,6 +16,8 @@ include(GNUInstallDirs)
 set(NOETIX_TARGET_ARCH "auto" CACHE STRING
     "Target vendor architecture: auto, x86_64 or aarch64")
 set_property(CACHE NOETIX_TARGET_ARCH PROPERTY STRINGS auto x86_64 aarch64)
+option(NOETIX_REQUIRE_N3_HW
+    "Fail configuration when the N3 real-hardware backend is unavailable" OFF)
 
 if(NOETIX_TARGET_ARCH STREQUAL "auto")
   string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" NOETIX_PROCESSOR_LOWER)
@@ -47,28 +49,51 @@ message(STATUS
   "(CMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR})")
 
 set(NOETIX_VENDOR_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third-party/vendor)
-set(N3_HW_ROOT ${NOETIX_VENDOR_ROOT}/hw_controller/n3)
+set(N3_HW_BASE ${NOETIX_VENDOR_ROOT}/hw_controller/n3)
+set(N3_HW_ROOT ${N3_HW_BASE}/${NOETIX_TARGET_ARCH_RESOLVED})
+set(N3_HW_INCLUDE_DIR ${N3_HW_BASE}/include)
 set(BUMI_HW_BASE ${NOETIX_VENDOR_ROOT}/hw_controller/bumi)
 set(BUMI_HW_ROOT ${BUMI_HW_BASE}/${NOETIX_TARGET_ARCH_RESOLVED})
 # The new Bumi hw uses one common header/API for x86_64 and aarch64.
 set(BUMI_HW_INCLUDE_DIR ${BUMI_HW_BASE}/include)
-set(PARALLEL_ROOT ${NOETIX_VENDOR_ROOT}/parallel_ankle)
+# Parallel-ankle solvers are family-specific and must not be mixed.
+set(N3_ANKLE_ROOT ${NOETIX_VENDOR_ROOT}/parallel_ankle/n3)
+set(BUMI_ANKLE_ROOT ${NOETIX_VENDOR_ROOT}/parallel_ankle/bumi)
 
 set(N3_HW_LIBRARY ${N3_HW_ROOT}/lib/libhw_controller.a)
 set(BUMI_HW_LIBRARY ${BUMI_HW_ROOT}/lib/libhw_controller.a)
 set(BUMI_VENDOR_SOEM_LIBRARY ${BUMI_HW_ROOT}/lib/libsoem.a)
 set(PARALLEL_LIBRARY
-    ${PARALLEL_ROOT}/lib/${NOETIX_TARGET_ARCH_RESOLVED}/libparallel_ankle_cpp.a)
+    ${BUMI_ANKLE_ROOT}/lib/${NOETIX_TARGET_ARCH_RESOLVED}/libparallel_ankle_cpp.a)
 
 set(N3_REAL_HW FALSE)
 set(BUMI_REAL_HW FALSE)
 
-# The supplied N3 vendor archive is x86_64 only.
-if(NOETIX_X86_64
-   AND EXISTS ${N3_HW_LIBRARY}
-   AND EXISTS ${N3_HW_ROOT}/hw_controller.h
-   AND EXISTS ${N3_HW_ROOT}/common_type.h)
+# N3 uses its own vendor API on both architectures. An aarch64 archive must
+# be supplied separately and must match the N3 headers, not the Bumi API.
+set(N3_HW_UNAVAILABLE_REASON "")
+if(NOT (NOETIX_X86_64 OR NOETIX_AARCH64))
+  set(N3_HW_UNAVAILABLE_REASON
+      "unsupported target architecture '${CMAKE_SYSTEM_PROCESSOR}'. ")
+else()
+  foreach(N3_REQUIRED_FILE IN ITEMS
+      "${N3_HW_LIBRARY}"
+      "${N3_HW_INCLUDE_DIR}/hw_controller.h"
+      "${N3_HW_INCLUDE_DIR}/common_type.h")
+    if(NOT EXISTS "${N3_REQUIRED_FILE}")
+      string(APPEND N3_HW_UNAVAILABLE_REASON
+          "missing ${N3_REQUIRED_FILE} (target=${NOETIX_TARGET_ARCH_RESOLVED}). ")
+    endif()
+  endforeach()
+endif()
+
+if(N3_HW_UNAVAILABLE_REASON STREQUAL "")
   set(N3_REAL_HW TRUE)
+elseif(NOETIX_REQUIRE_N3_HW)
+  message(FATAL_ERROR
+    "N3 real-hardware backend is required but unavailable: "
+    "${N3_HW_UNAVAILABLE_REASON}"
+    "Provide the matching N3 vendor archive and headers. Bumi archives are not compatible.")
 endif()
 
 # All Bumi models use the same new hw API. Only the binary archive changes
@@ -78,7 +103,7 @@ if((NOETIX_X86_64 OR NOETIX_AARCH64)
    AND EXISTS ${BUMI_HW_INCLUDE_DIR}/hw_controller.h
    AND EXISTS ${BUMI_HW_INCLUDE_DIR}/common_type.h
    AND EXISTS ${PARALLEL_LIBRARY}
-   AND EXISTS ${PARALLEL_ROOT}/include/parallel_solve/parallel_ankle.h)
+   AND EXISTS ${BUMI_ANKLE_ROOT}/include/parallel_solve/parallel_ankle.h)
   set(BUMI_REAL_HW TRUE)
 endif()
 
@@ -100,10 +125,17 @@ if(N3_REAL_HW)
   add_library(noetix_n3_hardware SHARED
     src/n3/n3_controller.cpp
     src/n3/n3_backend.cpp
+    ${N3_ANKLE_ROOT}/FK.cpp
+    ${N3_ANKLE_ROOT}/IK.cpp
+    ${N3_ANKLE_ROOT}/Jacobian.cpp
+    ${N3_ANKLE_ROOT}/coeffs.cpp
+    ${N3_ANKLE_ROOT}/parallel_ankle.cpp
   )
   target_include_directories(noetix_n3_hardware PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${N3_HW_ROOT}
+    ${N3_HW_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/n3
+    ${N3_ANKLE_ROOT}
   )
   target_link_libraries(noetix_n3_hardware PRIVATE
     ${NOETIX_YAML_TARGET}
@@ -115,8 +147,13 @@ if(N3_REAL_HW)
     "-Wl,--no-undefined"
   )
   target_compile_features(noetix_n3_hardware PUBLIC cxx_std_17)
+  message(STATUS
+    "N3 real-hardware backend enabled: arch=${NOETIX_TARGET_ARCH_RESOLVED}, "
+    "vendor=${N3_HW_LIBRARY}")
 else()
-  message(STATUS "N3 real-hardware backend not built.")
+  message(STATUS
+    "N3 real-hardware backend not built: ${N3_HW_UNAVAILABLE_REASON}"
+    "Use -DNOETIX_REQUIRE_N3_HW=ON for N3 deployments to fail early.")
 endif()
 
 if(BUMI_REAL_HW)
@@ -134,7 +171,7 @@ if(BUMI_REAL_HW)
   target_include_directories(noetix_bumi_hardware PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${BUMI_HW_INCLUDE_DIR}
-    ${PARALLEL_ROOT}/include
+    ${BUMI_ANKLE_ROOT}/include
   )
   target_link_libraries(noetix_bumi_hardware PRIVATE
     ${NOETIX_YAML_TARGET}
@@ -185,7 +222,10 @@ if(N3_REAL_HW)
   target_link_libraries(noetix_sdk2 PRIVATE noetix_n3_hardware)
   target_compile_definitions(noetix_sdk2 PRIVATE NOETIX_HAS_N3_HW=1)
 else()
-  target_compile_definitions(noetix_sdk2 PRIVATE NOETIX_HAS_N3_HW=0)
+  target_compile_definitions(noetix_sdk2 PRIVATE
+    NOETIX_HAS_N3_HW=0
+    NOETIX_N3_HW_UNAVAILABLE_REASON="${N3_HW_UNAVAILABLE_REASON}"
+  )
 endif()
 
 if(BUMI_REAL_HW)
