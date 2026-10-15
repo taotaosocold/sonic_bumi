@@ -117,6 +117,16 @@ if [[ "$ROBOT_TYPE" == bumi3 ]]; then
     mapfile -t ROS_RUNTIME <<< "$LAUNCH_INFO"
     export ROS_DOMAIN_ID="${ROS_RUNTIME[0]}"
     if [[ "${ROS_RUNTIME[1]}" == 1 ]]; then
+        # sudo 硬件桥与普通用户策略使用不同 UID，Fast DDS 的共享内存可能因权限不同而无法通信。
+        # 没有自定义 DDS 配置时，两端统一使用仓库内的 UDP 配置；显式配置仍由用户决定。
+        if [[ "${BUMI_BRIDGE_SUDO:-0}" == 1 && "${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}" == rmw_fastrtps_cpp ]]; then
+            export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+            if [[ -z "${FASTRTPS_DEFAULT_PROFILES_FILE:-}${FASTDDS_DEFAULT_PROFILES_FILE:-}" ]]; then
+                export FASTRTPS_DEFAULT_PROFILES_FILE="$SCRIPT_DIR/bumi3/ros2_udp.xml"
+                export FASTDDS_DEFAULT_PROFILES_FILE="$FASTRTPS_DEFAULT_PROFILES_FILE"
+                echo "BUMI3_ROS2_TRANSPORT=udp profile=$FASTRTPS_DEFAULT_PROFILES_FILE"
+            fi
+        fi
         # 在启动真机环境前，由原生程序加载并检查模型和离线动作。
         "$BUILD_DIR/bin/bumi3_deploy_onnx_ref" --runtime-config "$RUNTIME_DIR/runtime.json" --validate-only
         VENDOR_ARCH="$(uname -m)"
@@ -137,7 +147,13 @@ if [[ "$ROBOT_TYPE" == bumi3 ]]; then
             sudo -v
             BRIDGE_ENV=("ROS_DOMAIN_ID=$ROS_DOMAIN_ID" "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" \
                 "AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH:-}" "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}")
-            [[ -z "${RMW_IMPLEMENTATION:-}" ]] || BRIDGE_ENV+=("RMW_IMPLEMENTATION=$RMW_IMPLEMENTATION")
+            # sudo 会过滤环境变量，必须显式传递与策略端相同的 DDS 后端、传输配置和发现设置。
+            for BUMI_ROS_ENV_NAME in RMW_IMPLEMENTATION FASTRTPS_DEFAULT_PROFILES_FILE \
+                FASTDDS_DEFAULT_PROFILES_FILE FASTDDS_BUILTIN_TRANSPORTS ROS_DISCOVERY_SERVER ROS_SUPER_CLIENT; do
+                if [[ -v "$BUMI_ROS_ENV_NAME" ]]; then
+                    BRIDGE_ENV+=("$BUMI_ROS_ENV_NAME=${!BUMI_ROS_ENV_NAME}")
+                fi
+            done
             sudo env "${BRIDGE_ENV[@]}" "${BRIDGE_COMMAND[@]}" &
         else
             "${BRIDGE_COMMAND[@]}" &

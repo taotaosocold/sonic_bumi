@@ -71,11 +71,16 @@ class RosBackend {
 
   State WaitForState() {
     const auto deadline = Time::now() + std::chrono::seconds(5);
+    std::string last_error;
     while (Time::now() < deadline && !stopping) {
-      try { return GetState(); } catch (const std::exception&) {}
+      try { return GetState(); }
+      catch (const std::exception& error) { last_error = error.what(); }
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    throw std::runtime_error("No valid Noetix ROS2 state; start environment with matching domain/topics/config");
+    // 保留实际校验失败原因与接收数量，区分 DDS 未送达和已收到但电机、IMU 状态不合格。
+    std::lock_guard<std::mutex> lock(mutex_);
+    throw std::runtime_error("No valid Noetix ROS2 state; topic=" + settings_.at("state_topic").get<std::string>() +
+                             " messages=" + std::to_string(state_messages_) + "; " + last_error);
   }
 
   std::vector<int> ReadKeys() {
@@ -203,11 +208,16 @@ class RosBackend {
 
   void Receive(const noetix_msgs::msg::LowState& message) {
     std::lock_guard<std::mutex> lock(mutex_);
+    ++state_messages_;
     state_.enabled = message.status.enabled;
     status_received_ = Time::now();
     try {
-      if (message.motor_state.size() != 21 || !message.status.connected || message.status.fault || !message.imu.valid)
-        throw std::runtime_error("Invalid robot/IMU status");
+      if (message.motor_state.size() != 21)
+        throw std::runtime_error("Expected 21 motor states, received " + std::to_string(message.motor_state.size()));
+      if (!message.status.connected) throw std::runtime_error("Robot status.connected=false");
+      if (message.status.fault)
+        throw std::runtime_error("Robot status.fault=" + std::to_string(message.status.fault));
+      if (!message.imu.valid) throw std::runtime_error("IMU status.valid=false");
       std::unordered_map<std::string, const noetix_msgs::msg::MotorState*> motors;
       for (const auto& motor : message.motor_state)
         if (!motors.emplace(motor.name, &motor).second) throw std::runtime_error("Duplicate actuator feedback: " + motor.name);
@@ -234,6 +244,7 @@ class RosBackend {
       for (int i = 0; i < 3; ++i) state.gyro[i] = angular[i];
       state.enabled = message.status.enabled;
       state_ = state;
+      fault_.clear();
       if (!valid_ || state_sequence_ != message.sequence) {
         received_ = Time::now();
         valid_ = true;
@@ -252,7 +263,8 @@ class RosBackend {
   State state_;
   bool valid_ = false, sim_matches_ = false, seen_key_ = false;
   Time::time_point received_{}, sim_received_{}, status_received_{};
-  std::string fault_;
+  std::string fault_ = "No LowState message received";
+  uint64_t state_messages_ = 0;
   uint64_t sequence_ = 0, state_sequence_ = 0, ack_ = 0, ack_state_sequence_ = 0, key_sequence_ = 0;
   std::vector<int> keys_;
   rclcpp::Node::SharedPtr node_;
