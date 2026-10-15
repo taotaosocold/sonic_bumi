@@ -51,7 +51,8 @@ class Bumi3Deploy {
 
     backend_ = std::make_unique<RosBackend>(config_);
     used_low_state_data_ = backend_->WaitForState();
-    if (real_) backend_->Disable();
+    // 初始化只确认反馈有效，不把电机去使能作为启动前置条件。
+    // 真机仍等待操作员按 ]，再由 InitControl 请求使能并平滑进入参考起始姿态。
     input_interface_ = std::make_unique<KeyboardInput>();
     if (has_live_) zmq_input_ = std::make_unique<ZmqInput>(config_.at("teleop"));
     operator_state.play = config_.at("autoplay");
