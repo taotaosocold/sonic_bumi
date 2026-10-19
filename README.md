@@ -365,7 +365,8 @@ python check_environment.py
 | I want to... | Environment | How to install |
 |---|---|---|
 | **Train / finetune SONIC** | Isaac Lab's Python env | [Install Isaac Lab](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html), then `pip install -e "gear_sonic/[training]"` |
-| **Run MuJoCo simulation** | `.venv_sim` (auto-created) | `bash install_scripts/install_mujoco_sim.sh` |
+| **Run G1 MuJoCo simulation** | `.venv_sim` (auto-created) | `bash install_scripts/install_mujoco_sim.sh` |
+| **Run BUMI3 MuJoCo simulation** | `.venv_sim` (configured for BUMI3) | `bash install_scripts/install_mujoco_sim.sh --robot-type bumi3` |
 | **VR teleoperation** | `.venv_teleop` (auto-created) | `bash install_scripts/install_pico.sh` |
 | **Collect data** | `.venv_data_collection` (auto-created) | `bash install_scripts/install_data_collection.sh` |
 | **Deploy on real robot** | C++ build | See [deployment docs](https://nvlabs.github.io/GR00T-WholeBodyControl/getting_started/installation_deploy.html) |
@@ -373,6 +374,26 @@ python check_environment.py
 Each use case has its own lightweight environment. The install scripts use `uv`
 and create isolated venvs automatically — you don't need to manage them manually.
 Training is the only one that requires Isaac Lab (installed separately).
+
+### BUMI3 部署
+
+BUMI3 的环境、模型与数据准备，以及 sim2sim、sim2real、PICO 启动步骤见
+[BUMI3 部署指南](gear_sonic_deploy/BUMI3_DEPLOY.md)，G1 流程见 [G1 部署指南](gear_sonic_deploy/g1_deploy.md)。
+当前按目标机器人配置 `.venv_sim`；BUMI3 的独立 MuJoCo 终端另外加载 ROS 2 和 Noetix 消息环境：
+
+```bash
+# BUMI3 的独立 MuJoCo 终端：加载 Python、ROS 2 和 Noetix 消息环境。
+source .venv_sim/bin/activate
+source gear_sonic_deploy/scripts/setup_env_bumi3.sh
+python gear_sonic/scripts/run_sim_loop.py --robot-type bumi3
+```
+
+控制端执行 `bash gear_sonic_deploy/deploy.sh --robot-type bumi3 sim` 会自动加载同一环境。
+G1 仍使用原 `setup_env.sh`；BUMI3 使用 `setup_env_bumi3.sh`。两种安装配置使用同名环境，
+切换机器人前应确认依赖已满足；G1 的安装脚本会重建 `.venv_sim`。
+
+BUMI3 的仿真和控制端共用 `gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_model12.yaml`，
+其中 `DOMAIN_ID` 默认为 `0`，模型路径、ROS 话题、推理和硬件设置均在同一个文件中，两端自动加载。
 
 ## Documentation
 

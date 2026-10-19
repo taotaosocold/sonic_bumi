@@ -26,6 +26,7 @@ from gear_sonic.utils.mujoco_sim.bumi3_sim2sim import (
 
 @dataclass
 class Args:
+    # 仿真与控制端默认读取同一份 BUMI3 YAML；--config 可选择本机配置副本。
     config: Path = DEFAULT_DEPLOY_CONFIG
     obs_config: Path | None = None
     headless: bool = False
@@ -182,10 +183,19 @@ class Bumi3Ros2Bridge(Node):
 
 
 def main(args: Args):
+    """加载统一 BUMI3 配置并核对机器人与通信域，再创建 ROS 节点和 MuJoCo 环境。"""
     config = load_deploy_config(args.config)
-    os.environ['ROS_DOMAIN_ID'] = str(config['ros2']['domain_id'])
-    rclpy.init(args=[])
+    if config.get('ROBOT_TYPE') != 'bumi3_21dof' or config.get('SIMULATOR') != 'mujoco':
+        raise ValueError('BUMI3 仿真配置要求 ROBOT_TYPE: bumi3_21dof 和 SIMULATOR: mujoco')
+    domain = config['ros2']['domain_id']
+    # 默认配置通过 YAML 引用共享域编号；自定义副本若破坏引用，启动时拒绝不一致的值。
+    if config.get('DOMAIN_ID') != domain:
+        raise ValueError('DOMAIN_ID 与 ros2.domain_id 不一致，请保留统一配置中的域编号引用')
     contract = Bumi3Contract.from_yaml(repo_path(args.obs_config or config['contract']))
+    if config.get('NUM_JOINTS') != len(contract.policy_joint_names):
+        raise ValueError('仿真 NUM_JOINTS 与训练观测配置的关节数量不一致')
+    os.environ['ROS_DOMAIN_ID'] = str(domain)
+    rclpy.init(args=[])
     runner = Bumi3SonicSim2Sim(contract, make_static_reference_motion(contract), ZeroPolicy(contract), start_paused=True)
     bridge = Bumi3Ros2Bridge(config, contract, runner)
     executor = SingleThreadedExecutor()

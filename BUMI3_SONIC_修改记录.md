@@ -2,6 +2,77 @@
 
 本文档记录 BUMI3 原生 SONIC 支持的实际修改、机器人参数来源、兼容性边界和验证证据。所有结论区分静态检查、Isaac Sim 配置导入、环境 reset/step 与真实训练；未执行的测试不会表述为已通过。
 
+## 2026-10-19：按 G1 职责与命名整理 BUMI3 C++ 部署代码
+
+- 分支 `bumi3`，起始 HEAD `b67d69b5730407f7ea28c1e82178ae60a46274f2`，与上游领先／落后均为 0；保留前几轮的配置迁移、环境入口改名、README 和部署指南等工作，未暂存、提交、推送或同步服务器。
+- 将 `policy_engine.hpp` 改为 G1 同名的 `control_policy.hpp`，保留 `PolicyEngine`，改用显式 Initialize 加载和预热联合 ONNX；推理继续使用原 ONNX Runtime TensorRT／CUDA 后端，不改变 provider、缓存或精度设置。
+- 将 `robot_state.hpp` 的职责整理为 `robot_parameters.hpp` 与 `math_utils.hpp`；机器人反馈使用 RobotState，操作和朝向状态使用 OperatorState／HeadingState，命令沿用 G1 的 q_target、dq_target、kp、kd、tau_ff 字段。ROS LowState 回调改名为 LowStateHandler，保留名称映射、方向、限位、反馈校验与原握手逻辑。
+- 新增 G1 同职责的 `policy_parameters.hpp` 和 `observation_config.hpp`，用 PolicyParameters、ObservationConfig、EncoderModeConfig、EncoderConfig、FullObservationConfig 等结构替代主循环中的 JSON 参数索引。启动 JSON 仍作为配置装配与签名格式保留，避免影响 Python／C++ CRC 和既有 CSV 元数据。
+- 输入整理到 `input_interface/`：SimpleKeyboard 位于 keyboard_handler.hpp，ZMQEndpointInterface 位于 zmq_endpoint_interface.hpp；完整 SMPL 接收协议、终端处理和超时规则保留。MotionDataReader／MotionSequence 和 StateLogger 延续原职责，关节名接口改用字符串向量，命令和历史读取同一份已解析策略参数。
+- 保留 21 关节训练顺序、默认姿态、动作缩放、PD、1170／1470 维联合输入、50 Hz、历史顺序、真机准备姿态等待 T、仿真 reset 与影子快照等行为；不新增 planner、Dex3、手柄或录制回放功能。G1 源码未修改，BUMI3 指南补充文件职责对应表。
+- 参数来源仍为观测配置（SHA256 `223d28373f9a59fb22490d94e727e6a62a123327f27c433f835b842e4944b98a`），本轮未改模型、YAML 或机器人资产。已使用 `/usr/bin/c++ -fsyntax-only -O0 -std=gnu++17` 编译主源文件，包含参数来自既有 `build/bumi3/src/bumi3/bumi3_deploy_onnx_ref/CMakeFiles/bumi3_deploy_onnx_ref.dir/flags.make` 的 CXX_DEFINES／CXX_INCLUDES，并显式加入当前 include 目录；语法编译退出码 0，不生成目标文件。
+- 未运行测试、链接、策略推理、仿真或真机，不将语法编译描述为部署通过。回滚时仅恢复本轮头文件路径、类型和调用增量，保留前几轮修改；外部手写 include 若引用原头文件名，需按本轮对应关系更新。
+
+## 2026-10-19：合并 BUMI3 仿真与部署配置并删除旧部署 YAML
+
+- 分支 `bumi3`，起始 HEAD `b67d69b5730407f7ea28c1e82178ae60a46274f2`，与上游领先／落后均为 0。保留当前所有未提交工作，按用户明确要求删除 `gear_sonic_deploy/bumi3/deploy.yaml`，不暂存、不提交或推送。
+- 将旧文件的模型路径、观测配置引用、CSV 清单、TensorRT、ROS 话题、遥操作和硬件设置全部迁入 `gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_model12.yaml`。顶部 DOMAIN_ID=0 通过 YAML 锚点供 ros2.domain_id 引用，消除两文件及重复域值维护；原机器人参数、模型路径和推理默认值保持不变。
+- Python 公用默认配置常量、关节检查工具、C++ 默认配置路径及仓库定位锚点改用新文件；CSV 转换工具通过公用常量自动更新。MuJoCo 去掉两份配置之间的跳转，仿真和控制端统一通过 --config 选择配置副本，不再需要此前临时新增的 --wbc-config 参数。
+- README 与 BUMI3 指南同步更新，历史记录保留旧路径作为迁移来源。本次只审阅文本差异与引用，未执行 YAML 加载、测试、构建、转换、仿真或硬件部署；不把静态审阅描述为运行验证。
+- 观测配置及机器人资产未改动；旧文件来源是上一条记录 domain=0 后的工作区内容。外部命令若显式指定被删除文件，需修改 --config 路径；默认启动命令保持不变。回滚仅恢复本次配置迁移与引用增量，不操作既有模型、数据或虚拟环境。
+
+## 2026-10-19：增加 G1 同目录风格的 BUMI3 仿真配置并统一 domain 为 0
+
+- 分支 `bumi3`，起始 HEAD `b67d69b5730407f7ea28c1e82178ae60a46274f2`，与上游领先／落后均为 0；保留已有环境脚本改名、README、部署指南和修改记录等未提交增量，不暂存、不提交或推送。
+- 新增 `gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_model12.yaml`，实际接入 BUMI3 MuJoCo 启动流程，采用 ROBOT_TYPE、SIMULATOR、NUM_JOINTS、DOMAIN_ID 和 DEPLOY_CONFIG 字段。默认 domain 为 0，部署侧 `gear_sonic_deploy/bumi3/deploy.yaml` 的 `ros2.domain_id` 同步由 1 改为 0。
+- `bumi3_ros2_bridge.py` 默认读取新入口，支持 `--wbc-config` 和原有 `--config` 覆盖；初始化 ROS 前核对机器人类型、域编号及训练关节数量，domain 不一致时明确报错。训练侧的关节顺序、PD、模型和时间参数继续引用原观测配置，不复制 G1 机器人参数；G1 启动分支未改动。
+- 参数来源为现有 BUMI3 观测配置（SHA256 `223d28373f9a59fb22490d94e727e6a62a123327f27c433f835b842e4944b98a`），该文件与机器人资产不变；唯一通信编号变更由用户明确要求。更新 README 和 BUMI3 指南，说明自动加载 domain 和诊断终端 domain=0 的用法。
+- 本轮仅审阅代码差异和配置引用，未运行测试、配置加载程序、仿真或真机；不将静态审阅称为部署验证。已有外部部署配置若仍使用 domain 1，需与其对应仿真入口同步设置；原有进程需退出后重新启动以加载新配置。
+- 回滚时仅撤销本次新增仿真入口、桥加载逻辑和 domain／说明增量，保留此前未提交修改。
+
+## 2026-10-19：按用户要求撤回虚拟环境拆分及公共入口合并
+
+- 分支 `bumi3`，起始 HEAD `b67d69b5730407f7ea28c1e82178ae60a46274f2`；与上游领先／落后均为 0。逐项核对工作区差异后，只撤回前一轮环境拆分与入口合并，保留更早确认的 BUMI3 脚本改名、两份部署指南及其历史记录，不操作 Git 索引或历史，不提交或推送。
+- 恢复 `.venv_sim` 默认路径及对应 CMake、本地启动器、安装／部署逻辑；G1 的 `setup_env.sh` 恢复本 HEAD 原内容。恢复独立 `setup_env_bumi3.sh` 的 source 加载／bash 编译双入口，移除前一轮新增的独立构建文件。
+- README、G1／BUMI3 指南同步恢复当前环境命名和加载说明；旧本地部署文档中的环境名还原。此前环境拆分记录作为历史保留，以本条撤回记录为当前状态。
+- 未运行安装、测试、编译、仿真或真机验证；未创建、移动或删除任何实际虚拟环境目录。仅审阅文本差异与引用；G1 原脚本内容已恢复，不据此声称部署验证通过。
+- 配置、模型、机器人资产未修改；回滚来源为撤回前已核对的工作区差异和当前 HEAD 对应内容。本次不再引入新环境架构，后续方案待用户确认。
+
+## 2026-10-19：新增 G1 部署对照指南
+
+- 分支 `bumi3`，起始 HEAD `b67d69b5730407f7ea28c1e82178ae60a46274f2`，与上游领先／落后均为 0。保留当前已有的环境拆分、公共入口、部署指南等全部未提交修改，不暂存、不提交、不推送或同步服务器。
+- 按用户要求新增 `gear_sonic_deploy/g1_deploy.md`，整理 G1 原有的 GPU／C++、MuJoCo、模型和 PICO 环境，以及离线 sim2sim／sim2real、PICO 仿真／真机启动方式；明确 G1 DDS 与 BUMI3 Noetix ROS 路径的区别。
+- 命令与操作来源：当前 G1 `deploy.sh` 默认值、`.justfile`、C++ 初始化／输入接口、PICO manager 状态机、MuJoCo 悬挂按键，以及仓库原有部署说明；标明实际默认输入为 `manager`、G1 初始化为默认站姿、`9` 是悬挂辅助开关，避免沿用 BUMI3 操作。
+- 本次不改实现、配置、模型或机器人资产，仅阅读源码和文档核对命令；未执行依赖安装、测试、模型下载、仿真或硬件／PICO 验证，不将指南描述为运行验证结果。
+- 输出仅 G1 指南与本记录增量；GPU 安装、网络配置、模型资产仍由目标机器准备。回滚时只移除本次指南及记录，保留前几轮工作。
+
+## 2026-10-19：隔离 G1／BUMI3 虚拟环境并统一环境加载入口
+
+- 分支 `bumi3`，起始 HEAD `b67d69b5730407f7ea28c1e82178ae60a46274f2`；与上游领先／落后均为 0。保留本轮开始前的脚本改名、指南与修改记录等未提交工作，不移动或删除已有虚拟环境，不暂存、提交、推送或同步服务器。
+- BUMI3 安装默认目录改为 `.venv_sim_bumi3`，同步更新 `deploy.sh`、原生 CMake、两个 BUMI3 本地启动器和 `.gitignore`；保留 `BUMI_DEPLOY_VENV`／`BUMI_DEPLOY_PYTHON` 显式配置，G1 安装仍使用 `.venv_sim`。部署构建重新查找 MuJoCo，避免沿用旧环境的 CMake 缓存路径。
+- `scripts/setup_env.sh --robot-type bumi3` 统一加载 ROS 2、Noetix 安装环境和 GPU 库目录；默认无参数仍执行原 G1 加载流程。移除独立 BUMI3 环境入口，将编译逻辑独立为 `scripts/build_bumi3_ros2.sh`，由安装和部署流程调用，普通 source 不触发编译或下载。
+- GPU 库加载从 BUMI3 的 `deploy.sh` 迁入公共入口，新增对 `targets/<架构>-linux-gnu/lib` 布局的识别；不改变默认 TensorRT 推理设置、机器人配置或训练参数。关节检查脚本的环境／编译提示同步更新。
+- 更新根 `README.md`、`gear_sonic_deploy/BUMI3_DEPLOY.md`、根 `deploy.md` 与 `docs/source/getting_started/bumi3_local_and_16gpu_guide.md` 的相关说明；新增环境需执行 BUMI3 安装命令，不将旧虚拟环境目录直接改名。
+- 来源为当前工作区的安装、部署、环境加载和 CMake 逻辑，无模型或机器人资产修改。仅进行差异和引用审阅；遵照本轮工作范围，未运行测试、安装、构建、仿真或硬件部署，G1 兼容性仅做代码路径核对，不表述为运行验证通过。
+- 兼容性限制：外部自写脚本需采用新的环境名和公共入口；非标准 TensorRT／cuDNN 库目录仍需本机设置。回滚仅恢复本轮源码及文档增量，保留既有环境与上一轮修改。
+
+## 2026-10-19：统一 BUMI3 环境脚本命名
+
+- 分支 `bumi3`，起始 HEAD `b67d69b5730407f7ea28c1e82178ae60a46274f2`，与上游领先／落后均为 0。保留修改前已有的部署指南和修改记录增量；遵照用户要求，不暂存、不提交、不推送或同步服务器。
+- 将 BUMI3 ROS 环境脚本统一改名为 `gear_sonic_deploy/scripts/setup_env_bumi3.sh`，同步更新 `deploy.sh`、`install_scripts/install_mujoco_sim.sh`、`scripts/move_bumi3_joints.py` 中的调用或提示，以及简明部署指南；不保留旧名称入口。
+- 保留控制端原有的自动编译和 source 流程，并补充注释说明：控制进程中的环境供其子进程继承，独立终端运行的 MuJoCo／关节检查仍需自行 source；直接 bash 执行脚本用于编译，不改变父终端环境。
+- 来源为本 HEAD 的部署和环境脚本；机器人配置、资产、控制参数与 G1 分支行为不变。仅检查文本差异与名称引用，未运行测试、编译、依赖安装、仿真或真机部署。
+- 输出为脚本改名及上述引用／说明更新；手写旧路径的外部命令需改用新名称。回滚时只恢复脚本名称及本次引用增量，保留上一轮文档内容。
+
+## 2026-10-19：新增 BUMI3 简明部署指南
+
+- 分支 `bumi3`，起始 HEAD `b67d69b5730407f7ea28c1e82178ae60a46274f2`；修改前工作区干净，与上游领先／落后均为 0。遵照用户要求，不暂存、不提交、不推送或同步服务器。
+- 新增 `gear_sonic_deploy/BUMI3_DEPLOY.md`，集中说明环境安装、GPU 动态库、模型与 CSV 准备、离线 sim2sim／sim2real、PICO 仿真／真机命令及按键，使用仓库相对资产路径和可配置的本机 SDK 安装目录。
+- 命令来源为当前安装脚本、原生参数解析、控制状态机与 PICO 发送端；不修改实现、模型、训练契约或机器人参数，G1 默认行为不变。
+- 配置来源 SHA256：`gear_sonic_deploy/bumi3/deploy.yaml` 为 `3b1a852857517f2be3b1635e3918ebc696174bddd5f4064a4fc1ad62edfb107e`；`gear_sonic_deploy/policy/bumi3/observation_config.yaml` 为 `223d28373f9a59fb22490d94e727e6a62a123327f27c433f835b842e4944b98a`。
+- 已逐项对照代码核对启动参数、路径和状态语义；本轮仅撰写文档，未执行依赖安装、转换、仿真或真机／PICO 部署，不将文档核对表述为运行验证。
+- 限制：GPU 依赖、本机 EtherCAT／USB 配置和未分发资产仍需使用者准备；去使能软件反馈不作为实际断力证明。输出仅上述指南与本记录，回滚时仅撤销本次文档增量。
+
 ## 2026-08-28：修复五集合根坐标契约、足底验证和脚部训练闭环
 
 ### 1. 修改目标、分支与工作区保护

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "robot_state.hpp"
+#include "policy_parameters.hpp"
 #include <deque>
 
 namespace bumi3 {
@@ -11,24 +11,21 @@ class StateLogger {
   struct Entry {
     Quat base_quat = Quat::Identity();
     std::array<double, 3> base_ang_vel{}, gravity_dir{};
-    std::array<double, 21> body_q{}, body_dq{}, last_action{};
+    std::array<double, BUMI3_NUM_MOTOR> body_q{}, body_dq{}, last_action{};
   };
 
-  explicit StateLogger(const Json& contract)
-      : defaults_(contract.at("default_policy").get<std::vector<double>>()), control_dt_(contract.at("control_dt")) {
-    if (defaults_.size() != 21 || contract.at("history_length") != 10)
-      throw std::runtime_error("BUMI3 requires 21 joints and ten history samples");
+  explicit StateLogger(const PolicyParameters& parameters)
+      : defaults_(parameters.default_angles), control_dt_(parameters.control_dt) {}
+
+  void ResetHistory(const RobotState& state) {
+    const std::vector<double> zero_action(BUMI3_NUM_MOTOR, 0);
+    entries_.assign(HISTORY_LENGTH, MakeEntry(state, zero_action));
   }
 
-  void ResetHistory(const State& state) {
-    const std::vector<double> zero_action(21, 0);
-    entries_.assign(10, MakeEntry(state, zero_action));
-  }
-
-  bool LogFullState(const State& state, const std::vector<double>& last_action) {
-    if (last_action.size() != 21) return false;
+  bool LogFullState(const RobotState& state, const std::vector<double>& last_action) {
+    if (last_action.size() != BUMI3_NUM_MOTOR) return false;
     entries_.push_back(MakeEntry(state, last_action));
-    if (entries_.size() > 10) entries_.pop_front();
+    if (entries_.size() > HISTORY_LENGTH) entries_.pop_front();
     return true;
   }
 
@@ -49,13 +46,13 @@ class StateLogger {
   }
 
  private:
-  Entry MakeEntry(const State& state, const std::vector<double>& last_action) const {
+  Entry MakeEntry(const RobotState& state, const std::vector<double>& last_action) const {
     Entry entry;
     entry.base_quat = state.root;
     entry.base_ang_vel = state.gyro;
     const Eigen::Vector3d gravity = state.root.conjugate() * Eigen::Vector3d(0, 0, -1);
     for (int i = 0; i < 3; ++i) entry.gravity_dir[i] = gravity[i];
-    for (int i = 0; i < 21; ++i) {
+    for (int i = 0; i < BUMI3_NUM_MOTOR; ++i) {
       entry.body_q[i] = state.q[i] - defaults_[i];
       entry.body_dq[i] = state.dq[i];
       entry.last_action[i] = last_action[i];
@@ -63,7 +60,7 @@ class StateLogger {
     return entry;
   }
 
-  std::vector<double> defaults_;
+  std::array<double, BUMI3_NUM_MOTOR> defaults_;
   double control_dt_;
   std::deque<Entry> entries_;
 };

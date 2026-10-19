@@ -1,6 +1,6 @@
 #pragma once
 
-#include "robot_state.hpp"
+#include "robot_parameters.hpp"
 #include <onnxruntime_cxx_api.h>
 #include <zlib.h>
 #include <filesystem>
@@ -13,8 +13,12 @@ namespace bumi3 {
 // 联合模型已包含编码器和动态解码器；此处仅管理会话、张量契约和动作限幅。
 class PolicyEngine {
  public:
-  PolicyEngine(const std::string& path, int input_dimension, const Json& settings)
-      : env_(ORT_LOGGING_LEVEL_WARNING, "bumi3"), input_dimension_(input_dimension) {
+  PolicyEngine() : env_(ORT_LOGGING_LEVEL_WARNING, "bumi3") {}
+
+  // 沿用 G1 的显式 Initialize 生命周期，在机器人连接前加载和预热模型；
+  // 联合 ONNX 的参考维度由所选 Robot／SMPL 模式决定，不拆分或重新导出模型。
+  bool Initialize(const std::string& path, int input_dimension, const Json& settings) {
+    input_dimension_ = input_dimension;
     Ort::SessionOptions options;
     options.SetIntraOpNumThreads(2);
     options.SetInterOpNumThreads(1);
@@ -32,7 +36,7 @@ class PolicyEngine {
     const auto output_tensor = output_info.GetTensorTypeAndShapeInfo();
     const auto input_shape = input_tensor.GetShape(), output_shape = output_tensor.GetShape();
     if (input_shape.size() != 2 || output_shape.size() != 2 ||
-        input_shape[1] != input_dimension || output_shape[1] != 21 ||
+        input_shape[1] != input_dimension || output_shape[1] != BUMI3_NUM_MOTOR ||
         (input_shape[0] != 1 && input_shape[0] != -1) || (output_shape[0] != 1 && output_shape[0] != -1) ||
         input_tensor.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
         output_tensor.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT)
@@ -41,7 +45,7 @@ class PolicyEngine {
     input_name_ = session_->GetInputNameAllocated(0, allocator).get();
     output_name_ = session_->GetOutputNameAllocated(0, allocator).get();
     policy_input_buffer_.assign(input_dimension_, 0);
-    action_buffer_.assign(21, 0);
+    action_buffer_.assign(BUMI3_NUM_MOTOR, 0);
     if (provider != "cpu") {
       // 首次 GPU 推理可能构建 TensorRT 引擎和分配设备内存；在连接机器人前预热，默认关闭图捕获。
       // 此处的零输入只初始化会话，不进入观测历史，也不会发送任何机器人命令。
@@ -52,6 +56,7 @@ class PolicyEngine {
               << " device=" << settings.value("device_id", 0)
               << " precision=" << (provider == "tensorrt" && settings.value("fp16", false) ? "fp16" : "fp32")
               << " model=" << path << '\n';
+    return true;
   }
 
   // 与 G1 的 PolicyEngine 一样持有输入和动作缓冲区；GPU 预热与控制循环复用同一份输入存储。
@@ -69,9 +74,9 @@ class PolicyEngine {
     const char* input = input_name_.c_str();
     const char* output = output_name_.c_str();
     auto results = session_->Run(Ort::RunOptions{nullptr}, &input, &tensor, 1, &output, 1);
-    if (results[0].GetTensorTypeAndShapeInfo().GetElementCount() != 21) throw std::runtime_error("Invalid ONNX output");
+    if (results[0].GetTensorTypeAndShapeInfo().GetElementCount() != BUMI3_NUM_MOTOR) throw std::runtime_error("Invalid ONNX output");
     const auto* values = results[0].GetTensorData<float>();
-    for (int i = 0; i < 21; ++i) {
+    for (int i = 0; i < BUMI3_NUM_MOTOR; ++i) {
       if (!std::isfinite(values[i])) throw std::runtime_error("Nonfinite policy action");
       action_buffer_[i] = std::clamp(double(values[i]), -clip, clip);
     }
@@ -144,7 +149,7 @@ class PolicyEngine {
 
   Ort::Env env_;
   std::unique_ptr<Ort::Session> session_;
-  int input_dimension_;
+  int input_dimension_ = 0;
   std::string input_name_, output_name_;
   std::vector<float> policy_input_buffer_;
   std::vector<double> action_buffer_;

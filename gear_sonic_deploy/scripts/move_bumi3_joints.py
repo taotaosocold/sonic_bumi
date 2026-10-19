@@ -84,10 +84,10 @@ class HardwareBridge:
         """复制本机资源与网络配置，为桥传入训练力矩上限和正确的浮点参数类型。"""
         install = os.environ.get('BUMI_ROS_INSTALL')
         if not install:
-            raise RuntimeError('请先 source gear_sonic_deploy/scripts/setup_bumi3_ros2.sh')
+            raise RuntimeError('请先 source gear_sonic_deploy/scripts/setup_env_bumi3.sh')
         executable = Path(install) / 'lib/noetix_bridge/noetix_bridge_node'
         if not executable.is_file():
-            raise RuntimeError('硬件桥未编译，请先执行 bash gear_sonic_deploy/scripts/setup_bumi3_ros2.sh real')
+            raise RuntimeError('硬件桥未编译，请先执行 bash gear_sonic_deploy/scripts/setup_env_bumi3.sh real')
         if self.args.sudo:
             subprocess.run(['sudo', '-v'], check=True)
         network = yaml.safe_load(repo_path(self.config['hardware']['network']).read_text(encoding='utf-8'))
@@ -419,7 +419,7 @@ class JointCheck:
 def main():
     """默认仅展示计划；明确指定 --run 并在终端确认后才开始真实关节检查。"""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', default='gear_sonic_deploy/bumi3/deploy.yaml')
+    parser.add_argument('--config', default='gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_model12.yaml')
     parser.add_argument('--obs-config')
     parser.add_argument('--robot-root')
     parser.add_argument('--run', action='store_true', help='允许真实 ROS 动作，仍逐关节等待 Enter')

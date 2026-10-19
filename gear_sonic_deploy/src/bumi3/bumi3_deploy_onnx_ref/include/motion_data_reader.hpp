@@ -93,8 +93,8 @@ class MotionDataReader {
     int current_motion_index_ = 0;
 
     bool ReadFromCSV(const nlohmann::json& entries, bool use_smpl,
-                     uint32_t contract_id, const nlohmann::json& joint_names) {
-        if (!entries.is_array() || !joint_names.is_array() || joint_names.size() != 21) {
+                     uint32_t contract_id, const std::vector<std::string>& joint_names) {
+        if (!entries.is_array() || joint_names.size() != 21) {
             throw std::runtime_error("reference playlist requires an array and 21 policy joint names");
         }
         // 全部校验成功后再替换集合，读取失败时不留下半套动作数据。
@@ -152,7 +152,7 @@ class MotionDataReader {
     // 先检查机器人、encoder、50 Hz 帧率和训练契约，再读取数值数组。
     static nlohmann::json ReadMetadata(const std::string& path, MotionSequence& motion,
                                       bool use_smpl, uint32_t contract_id,
-                                      const nlohmann::json& joint_names) {
+                                      const std::vector<std::string>& joint_names) {
         std::ifstream input(path);
         if (!input) throw std::runtime_error("reference metadata not found: " + path + "; run reference/bumi3_convert_motion.py first");
         const auto metadata = nlohmann::json::parse(input);
@@ -160,7 +160,7 @@ class MotionDataReader {
             throw std::runtime_error("unsupported reference format: " + path);
         }
         if (metadata.at("encoder") != (use_smpl ? "smpl" : "robot") ||
-            metadata.at("reference_contract_id") != contract_id || metadata.at("policy_joint_names") != joint_names) {
+            metadata.at("reference_contract_id") != contract_id || metadata.at("policy_joint_names").get<std::vector<std::string>>() != joint_names) {
             throw std::runtime_error("reference/config mismatch; reconvert with --overwrite: " + path);
         }
         motion.timesteps = metadata.at("frames");
@@ -176,7 +176,7 @@ class MotionDataReader {
     // 首行为表头；每帧列数、总帧数、有限数值及关节列顺序必须与元数据一致。
     static std::vector<double> ReadCSV(const std::filesystem::path& directory,
                                       const nlohmann::json& field, int frames, int width,
-                                      const nlohmann::json* joint_names = nullptr) {
+                                      const std::vector<std::string>* joint_names = nullptr) {
         if (field.at("shape") != nlohmann::json::array({frames, width})) {
             throw std::runtime_error("reference array shape mismatch");
         }
@@ -195,7 +195,7 @@ class MotionDataReader {
         std::string column;
         int columns = 0;
         while (std::getline(header, column, ',')) {
-            if (joint_names && (columns >= width || column != joint_names->at(columns).get<std::string>())) {
+            if (joint_names && (columns >= width || column != joint_names->at(columns))) {
                 throw std::runtime_error("reference CSV joint order mismatch: " + path.string());
             }
             ++columns;

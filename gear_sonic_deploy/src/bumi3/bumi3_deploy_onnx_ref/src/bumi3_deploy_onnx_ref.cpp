@@ -1,10 +1,13 @@
 #include "deploy_config.hpp"
-#include "input_interface.hpp"
+#include "input_interface/keyboard_handler.hpp"
 #include "motion_data_reader.hpp"
-#include "policy_engine.hpp"
+#include "observation_config.hpp"
+#include "policy_parameters.hpp"
+#include "math_utils.hpp"
+#include "control_policy.hpp"
 #include "ros2_backend.hpp"
 #include "state_logger.hpp"
-#include "zmq_input.hpp"
+#include "input_interface/zmq_endpoint_interface.hpp"
 #include <functional>
 #include <optional>
 
@@ -16,7 +19,8 @@ class Bumi3Deploy {
  public:
   enum class ProgramState { INIT, WAIT_FOR_CONTROL, CONTROL, STOPPED };
 
-  explicit Bumi3Deploy(Json config) : config_(std::move(config)), contract_(config_.at("contract")) {}
+  explicit Bumi3Deploy(Json config)
+      : config_(std::move(config)), policy_parameters_(PolicyParameters::Parse(config_.at("contract"))) {}
   ~Bumi3Deploy() { Stop(false); }
 
   void Initialize() {
@@ -26,26 +30,32 @@ class Bumi3Deploy {
     offline_smpl_ = config_.at("encoder") == "smpl";
     live_ = !has_offline_;
     current_encoder_mode_ = live_ || offline_smpl_ ? 1 : 0;
-    control_dt_ = contract_.at("control_dt");
-    if (std::abs(control_dt_ - 0.02) > 1e-8 || contract_.at("policy_joint_names").size() != 21 ||
-        contract_.at("history_length") != 10 || contract_.at("future_frames") != 10 || contract_.at("future_stride") != 5)
-      throw std::runtime_error("Native BUMI3 requires 21 joints, 50 Hz and the trained ten-frame layout");
+    control_dt_ = policy_parameters_.control_dt;
 
     // 与 G1 一样先预加载动作，再初始化模型与观测函数；控制循环和切换动作不读取 CSV。
     if (has_offline_) {
       if (!motion_reader_.ReadFromCSV(config_.at("motions"), offline_smpl_,
-                                      config_.at("reference_contract_id"), contract_.at("policy_joint_names")))
+                                      config_.at("reference_contract_id"), policy_parameters_.policy_joint_names))
         throw std::runtime_error("No reference motions loaded");
       current_motion_ = motion_reader_.GetMotionShared(motion_reader_.current_motion_index_);
     }
     const Json inference = config_.value("inference", Json{{"provider", config_.at("provider")}});
-    if (has_offline_)
-      offline_policy_ = std::make_unique<PolicyEngine>(config_.at("policy"), offline_smpl_ ? 1470 : 1170, inference);
-    if (has_live_) live_policy_ = std::make_unique<PolicyEngine>(config_.at("smpl_policy"), 1470, inference);
-    state_logger_ = std::make_unique<StateLogger>(contract_);
-    last_action.assign(21, 0);
-    obs_config_ = config_.value("observations", DefaultObservations());
-    encoder_config_ = config_.value("encoder_config", DefaultEncoderConfig());
+    if (has_offline_) {
+      offline_policy_ = std::make_unique<PolicyEngine>();
+      if (!offline_policy_->Initialize(config_.at("policy"),
+          (offline_smpl_ ? SMPL_REFERENCE_DIM : ROBOT_REFERENCE_DIM) + PROPRIOCEPTION_DIM, inference))
+        throw std::runtime_error("Failed to initialize offline BUMI3 policy");
+    }
+    if (has_live_) {
+      live_policy_ = std::make_unique<PolicyEngine>();
+      if (!live_policy_->Initialize(config_.at("smpl_policy"), SMPL_REFERENCE_DIM + PROPRIOCEPTION_DIM, inference))
+        throw std::runtime_error("Failed to initialize live BUMI3 policy");
+    }
+    state_logger_ = std::make_unique<StateLogger>(policy_parameters_);
+    last_action.assign(BUMI3_NUM_MOTOR, 0);
+    const auto observation_config = ObservationConfigParser::ParseFullConfig(config_);
+    obs_config_ = observation_config.observations;
+    encoder_config_ = observation_config.encoder;
     InitializeObservationFunctions();
     if (config_.at("validate_only") == true) return;
 
@@ -53,13 +63,13 @@ class Bumi3Deploy {
     used_low_state_data_ = backend_->WaitForState();
     // 初始化只确认反馈有效，不把电机去使能作为启动前置条件。
     // 真机仍等待操作员按 ]，再由 InitControl 请求使能并平滑进入参考起始姿态。
-    input_interface_ = std::make_unique<KeyboardInput>();
-    if (has_live_) zmq_input_ = std::make_unique<ZmqInput>(config_.at("teleop"));
+    input_interface_ = std::make_unique<SimpleKeyboard>();
+    if (has_live_) zmq_interface_ = std::make_unique<ZMQEndpointInterface>(config_.at("teleop"));
     operator_state.play = config_.at("autoplay");
     reset_with_reference_velocity_ = operator_state.play;
     if (live_) {
       std::cout << "Waiting for ten-frame SMPL stream\n";
-      frozen_pose_ = zmq_input_->WaitForPose(config_.at("teleop").at("startup_timeout"));
+      frozen_pose_ = zmq_interface_->WaitForPose(config_.at("teleop").at("startup_timeout"));
       live_pose_snapshot_ = frozen_pose_;
     }
     program_state_ = ProgramState::INIT;
@@ -99,9 +109,7 @@ class Bumi3Deploy {
   }
 
  private:
-  struct OperatorState {
-    bool start = false, play = false, stop = false;
-  } operator_state;
+  OperatorState operator_state;
 
   using ObservationFunction = std::function<bool(std::vector<double>&, std::size_t)>;
   struct ObservationRegistry {
@@ -114,34 +122,6 @@ class Bumi3Deploy {
     ObservationFunction function;
     std::size_t offset, dimension;
   };
-  struct MotorCommand {
-    // 目标关节仍按策略顺序保存，执行器名称、方向、限位和 PD 增益由 ROS2 后端处理。
-    std::vector<double> q_target;
-    std::vector<double> reference_qpos;
-  };
-
-  // 兼容先前的临时配置；新启动流程从 observation_config.yaml 读取同名注册项。
-  static Json DefaultObservations() {
-    Json result = Json::array();
-    for (const auto* name : {"his_base_angular_velocity_10frame_step1", "his_body_joint_positions_10frame_step1",
-                            "his_body_joint_velocities_10frame_step1", "his_last_actions_10frame_step1",
-                            "his_gravity_dir_10frame_step1"})
-      result.push_back(Json{{"name", name}, {"enabled", true}});
-    return result;
-  }
-
-  static Json DefaultEncoderConfig() {
-    const Json robot = {"motion_joint_positions_10frame_step5", "motion_joint_velocities_10frame_step5",
-                        "motion_anchor_orientation_10frame_step5"};
-    const Json smpl = {"smpl_joints_10frame_step1", "smpl_anchor_orientation_10frame_step1"};
-    Json entries = Json::array();
-    for (const auto& name : robot) entries.push_back(Json{{"name", name}, {"enabled", true}});
-    for (const auto& name : smpl) entries.push_back(Json{{"name", name}, {"enabled", true}});
-    return Json{{"dimension", 64}, {"encoder_observations", entries},
-                {"encoder_modes", Json::array({Json{{"name", "robot"}, {"mode_id", 0}, {"required_observations", robot}},
-                                                Json{{"name", "smpl"}, {"mode_id", 1}, {"required_observations", smpl}}})}};
-  }
-
   // 参考观测与 G1 一样按帧、步距和输出偏移采集；所有采集函数使用本周期同一份参考快照。
   int GetFutureFrame(int frame_index, int step_size) const {
     if (live_) return operator_state.play ? frame_index * step_size : 0;
@@ -190,13 +170,13 @@ class Bumi3Deploy {
   // 实时 SMPL 每周期变化的根朝向必须保留，不能每帧重新对齐而消除操作者的转身目标。
   void UpdateHeadingState() {
     if (!reinitialize_heading_) return;
-    init_base_quat_ = used_low_state_data_.root;
-    init_ref_data_root_rot_ = GetReferenceQuaternion(live_ ? 0 : current_frame_);
+    heading_state_.init_base_quat = used_low_state_data_.root;
+    heading_state_.init_ref_data_root_rot = GetReferenceQuaternion(live_ ? 0 : current_frame_);
     reinitialize_heading_ = false;
   }
 
   Quat ComputeApplyDeltaHeading() const {
-    return HeadingQuaternion(init_base_quat_) * HeadingQuaternion(init_ref_data_root_rot_).conjugate();
+    return HeadingQuaternion(heading_state_.init_base_quat) * HeadingQuaternion(heading_state_.init_ref_data_root_rot).conjugate();
   }
 
   // 函数名沿用 G1 的 MutiFrame 拼写，含义仍为多帧采集；不引入未训练的 heading-only 模式。
@@ -289,44 +269,43 @@ class Bumi3Deploy {
       active.push_back(ActiveObservation{name, found->function, offset, found->dimension});
       return found->dimension;
     };
-    const auto defaults = DefaultEncoderConfig();
-    const auto& expected_mode = defaults.at("encoder_modes")[current_encoder_mode_];
-    std::optional<Json> mode_config;
-    for (const auto& mode : encoder_config_.at("encoder_modes")) {
-      if (mode.at("name") != expected_mode.at("name")) continue;
+    const auto defaults = ObservationConfigParser::GetDefaultEncoderConfig();
+    const auto& expected_mode = defaults.encoder_modes.at(current_encoder_mode_);
+    std::optional<EncoderModeConfig> mode_config;
+    for (const auto& mode : encoder_config_.encoder_modes) {
+      if (mode.name != expected_mode.name) continue;
       if (mode_config) throw std::runtime_error("Duplicate BUMI3 encoder mode");
       mode_config = mode;
     }
-    if (!mode_config || mode_config->at("mode_id") != current_encoder_mode_ ||
-        mode_config->at("required_observations") != expected_mode.at("required_observations") ||
-        encoder_config_.at("dimension") != 64) throw std::runtime_error("Encoder layout differs from trained BUMI3 model");
+    if (!mode_config || mode_config->mode_id != current_encoder_mode_ ||
+        mode_config->required_observations != expected_mode.required_observations ||
+        encoder_config_.dimension != TOKEN_DIM) throw std::runtime_error("Encoder layout differs from trained BUMI3 model");
     std::size_t encoder_offset = 0;
-    for (const auto& name_json : mode_config->at("required_observations")) {
-      const auto name = name_json.get<std::string>();
+    for (const auto& name : mode_config->required_observations) {
       int matches = 0;
-      for (const auto& entry : encoder_config_.at("encoder_observations"))
-        if (entry.at("name") == name && entry.value("enabled", true)) ++matches;
+      for (const auto& entry : encoder_config_.encoder_observations)
+        if (entry.name == name && entry.enabled) ++matches;
       if (matches != 1) throw std::runtime_error("Required encoder observation disabled or duplicated: " + name);
       encoder_offset += append(name, encoder_offset, active_encoder_obs_functions_);
     }
     // 联合模型布局为参考在前、历史在后，不能照搬 G1 独立 decoder 的 token+历史输入。
     std::size_t policy_offset = encoder_offset;
-    Json active_names = Json::array(), expected_names = Json::array();
-    for (const auto& entry : DefaultObservations()) expected_names.push_back(entry.at("name"));
+    std::vector<std::string> active_names, expected_names;
+    for (const auto& entry : ObservationConfigParser::GetDefaultConfig()) expected_names.push_back(entry.name);
     for (const auto& entry : obs_config_) {
-      if (!entry.value("enabled", true)) continue;
-      const auto name = entry.at("name").get<std::string>();
+      if (!entry.enabled) continue;
+      const auto& name = entry.name;
       active_names.push_back(name);
       policy_offset += append(name, policy_offset, active_obs_functions_);
     }
-    if (active_names != expected_names || encoder_offset != std::size_t(current_encoder_mode_ == 1 ? 780 : 480) ||
-        policy_offset - encoder_offset != 690) throw std::runtime_error("Observation layout differs from trained BUMI3 model");
+    if (active_names != expected_names || encoder_offset != std::size_t(current_encoder_mode_ == 1 ? SMPL_REFERENCE_DIM : ROBOT_REFERENCE_DIM) ||
+        policy_offset - encoder_offset != PROPRIOCEPTION_DIM) throw std::runtime_error("Observation layout differs from trained BUMI3 model");
     encoder_obs_buffer_.assign(encoder_offset, 0);
     obs_buffer_.assign(policy_offset, 0);
     const auto& policy = live_ ? live_policy_ : offline_policy_;
     if (!policy || policy->GetInputBuffer().size() != policy_offset)
       throw std::runtime_error("Observation buffer differs from selected policy input");
-    std::cout << "BUMI3_OBSERVATIONS encoder=" << expected_mode.at("name").get<std::string>()
+    std::cout << "BUMI3_OBSERVATIONS encoder=" << expected_mode.name
               << " reference=" << encoder_offset << " history=690 total=" << policy_offset << '\n';
   }
 
@@ -366,13 +345,13 @@ class Bumi3Deploy {
   }
 
   bool GatherInputInterfaceData() {
-    if (live_) live_pose_snapshot_ = operator_state.play ? zmq_input_->GetLatestPose() : frozen_pose_;
+    if (live_) live_pose_snapshot_ = operator_state.play ? zmq_interface_->GetLatestPose() : frozen_pose_;
     return !live_ || live_pose_snapshot_.last >= 0;
   }
 
   void ResetObservationHistory() {
     used_low_state_data_ = backend_->GetState();
-    last_action.assign(21, 0);
+    last_action.assign(BUMI3_NUM_MOTOR, 0);
     state_logger_->ResetHistory(used_low_state_data_);
     reinitialize_heading_ = true;
   }
@@ -390,9 +369,8 @@ class Bumi3Deploy {
     backend_->Enable();
     enabled_ = true;
     // qpos 的驱动关节顺序不是策略顺序，初始化目标只能从策略参考或默认姿态读取。
-    MotorCommand command;
-    command.q_target = live_ ? contract_.at("default_policy").get<std::vector<double>>()
-                            : std::vector<double>(current_motion_->JointPositions(current_frame_), current_motion_->JointPositions(current_frame_) + 21);
+    MotorCommand command = policy_parameters_.CreatePositionCommand(
+        live_ ? policy_parameters_.default_angles.data() : current_motion_->JointPositions(current_frame_));
     motor_command_buffer_ = std::move(command);
   }
 
@@ -420,10 +398,10 @@ class Bumi3Deploy {
     }
     const int steps = std::max(1, int(config_.at("entry_duration").get<double>() / control_dt_));
     if (entry_step_ < steps) {
-      MotorCommand command{std::vector<double>(21), {}};
+      MotorCommand command = policy_parameters_.CreatePositionCommand(policy_parameters_.default_angles.data());
       ++entry_step_;
-      for (int i = 0; i < 21; ++i) {
-        const double end = live_ ? contract_.at("default_policy")[i].get<double>() : current_motion_->JointPositions(current_frame_)[i];
+      for (int i = 0; i < BUMI3_NUM_MOTOR; ++i) {
+        const double end = live_ ? policy_parameters_.default_angles[i] : current_motion_->JointPositions(current_frame_)[i];
         command.q_target[i] = entry_start_[i] + (end - entry_start_[i]) * entry_step_ / steps;
       }
       motor_command_buffer_ = std::move(command);
@@ -463,12 +441,12 @@ class Bumi3Deploy {
       } else if (key == 'T') {
         if (real_ && !enabled_) { std::cout << "Press ] before playing\n"; continue; }
         if (live_) {
-          frozen_pose_ = zmq_input_->GetLatestPose();
+          frozen_pose_ = zmq_interface_->GetLatestPose();
           live_pose_snapshot_ = frozen_pose_;
           if (!operator_state.play) {
             // 恢复实时播放只清空历史动作，不重新对齐朝向，避免把当前转身目标消掉。
             used_low_state_data_ = backend_->GetState();
-            last_action.assign(21, 0);
+            last_action.assign(BUMI3_NUM_MOTOR, 0);
             state_logger_->ResetHistory(used_low_state_data_);
           }
         } else if (!operator_state.play && current_frame_ == current_motion_->timesteps - 1) {
@@ -504,7 +482,7 @@ class Bumi3Deploy {
         operator_state.start = false;
         live_ = !live_;
         if (live_) {
-          frozen_pose_ = zmq_input_->WaitForPose(config_.at("teleop").at("startup_timeout"));
+          frozen_pose_ = zmq_interface_->WaitForPose(config_.at("teleop").at("startup_timeout"));
           live_pose_snapshot_ = frozen_pose_;
         }
         current_encoder_mode_ = live_ || offline_smpl_ ? 1 : 0;
@@ -520,11 +498,11 @@ class Bumi3Deploy {
     auto& policy_engine = live_ ? live_policy_ : offline_policy_;
     auto& obs_buffer_float = policy_engine->GetInputBuffer();
     std::transform(obs_buffer_.begin(), obs_buffer_.end(), obs_buffer_float.begin(), [](double value) { return float(value); });
-    if (!policy_engine->Infer(contract_.at("action_clip"))) return false;
+    if (!policy_engine->Infer(policy_parameters_.action_clip)) return false;
     last_action = policy_engine->GetActionBuffer();
-    MotorCommand command{std::vector<double>(21), {}};
-    for (int i = 0; i < 21; ++i)
-      command.q_target[i] = contract_.at("default_policy")[i].get<double>() + contract_.at("action_scale_policy")[i].get<double>() * last_action[i];
+    MotorCommand command = policy_parameters_.CreatePositionCommand(policy_parameters_.default_angles.data());
+    for (int i = 0; i < BUMI3_NUM_MOTOR; ++i)
+      command.q_target[i] = policy_parameters_.default_angles[i] + policy_parameters_.action_scale[i] * last_action[i];
     if (!real_ && !live_ && current_motion_->has_robot_reference)
       command.reference_qpos.assign(current_motion_->MujocoPositions(current_frame_), current_motion_->MujocoPositions(current_frame_) + 28);
     motor_command_buffer_ = std::move(command);
@@ -533,7 +511,7 @@ class Bumi3Deploy {
 
   void LowCommandWriter() {
     if (!enabled_ || !motor_command_buffer_ || operator_state.stop) return;
-    backend_->WriteTarget(motor_command_buffer_->q_target);
+    backend_->WriteTarget(*motor_command_buffer_);
     // 参考影子保存于命令快照，不能在游标推进后再读取下一帧来显示上一条命令。
     backend_->WriteReference(motor_command_buffer_->reference_qpos);
   }
@@ -584,16 +562,19 @@ class Bumi3Deploy {
     }
   }
 
-  Json config_, contract_, obs_config_, encoder_config_;
+  Json config_;
+  PolicyParameters policy_parameters_;
+  std::vector<ObservationConfig> obs_config_;
+  EncoderConfig encoder_config_;
   ProgramState program_state_ = ProgramState::INIT;
   bool real_ = false, has_offline_ = false, has_live_ = false, offline_smpl_ = false;
   bool live_ = false, enabled_ = false, entry_started_ = false, reset_with_reference_velocity_ = false;
   bool reinitialize_heading_ = true;
   double control_dt_ = 0.02;
   int current_frame_ = 0, current_encoder_mode_ = 0, saved_frame_for_observation_window_ = 0, entry_step_ = 0;
-  Quat init_base_quat_ = Quat::Identity(), init_ref_data_root_rot_ = Quat::Identity();
-  State used_low_state_data_;
-  std::array<double, 21> entry_start_{};
+  HeadingState heading_state_;
+  RobotState used_low_state_data_;
+  std::array<double, BUMI3_NUM_MOTOR> entry_start_{};
   std::vector<double> last_action, obs_buffer_, encoder_obs_buffer_;
   std::vector<ActiveObservation> active_obs_functions_, active_encoder_obs_functions_;
   std::optional<MotorCommand> motor_command_buffer_;
@@ -603,7 +584,7 @@ class Bumi3Deploy {
   std::unique_ptr<StateLogger> state_logger_;
   std::unique_ptr<RosBackend> backend_;
   std::unique_ptr<InputInterface> input_interface_;
-  std::unique_ptr<ZmqInput> zmq_input_;
+  std::unique_ptr<ZMQEndpointInterface> zmq_interface_;
   PoseWindow frozen_pose_, live_pose_snapshot_;
 };
 

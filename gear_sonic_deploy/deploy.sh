@@ -50,8 +50,9 @@ if [[ "$ROBOT_TYPE" == bumi3 ]]; then
     export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
     cd "$REPO_ROOT"
     # 与 G1 一样先构建机器人的 C++ 控制程序，参数和 YAML 均交给原生入口解析。
-    bash "$SCRIPT_DIR/scripts/setup_bumi3_ros2.sh" sim
-    source "$SCRIPT_DIR/scripts/setup_bumi3_ros2.sh"
+    bash "$SCRIPT_DIR/scripts/setup_env_bumi3.sh" sim
+    # source 在当前控制进程中加载 ROS 2 与消息包；其他终端的 MuJoCo 进程需单独加载。
+    source "$SCRIPT_DIR/scripts/setup_env_bumi3.sh"
     # 与 G1 一样链接环境安装的 C++ SDK；自定义路径可通过安装参数或标准根目录变量指定。
     # BUMI3 与 G1 一样面向 GPU 部署，默认链接带 CUDA/TensorRT 后端的 SDK。
     # 显式指定 ONNX_VARIANT=cpu 时使用独立调试 SDK；不根据当前机器是否有显卡改变默认值。
@@ -136,8 +137,9 @@ if [[ "$ROBOT_TYPE" == bumi3 ]]; then
             echo "Missing $VENDOR_ARCH Bumi vendor archive. Install the matching SDK library, or use --external-bridge for a remote hardware node." >&2
             exit 2
         fi
-        bash "$SCRIPT_DIR/scripts/setup_bumi3_ros2.sh" real
-        source "$SCRIPT_DIR/scripts/setup_bumi3_ros2.sh"
+        bash "$SCRIPT_DIR/scripts/setup_env_bumi3.sh" real
+        # 硬件包编译完成后重新加载其安装环境，供后续硬件桥与控制程序继承。
+        source "$SCRIPT_DIR/scripts/setup_env_bumi3.sh"
         BRIDGE_COMMAND=("$BUMI_ROS_INSTALL/lib/noetix_bridge/noetix_bridge_node" --ros-args \
             --params-file "$RUNTIME_DIR/bridge_params.yaml" \
             -r "/noetix/low_cmd:=${ROS_RUNTIME[2]}" \

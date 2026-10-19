@@ -1,6 +1,7 @@
 #pragma once
 
-#include "robot_state.hpp"
+#include "robot_parameters.hpp"
+#include "math_utils.hpp"
 #include <mujoco/mujoco.h>
 #include <yaml-cpp/yaml.h>
 #include <zlib.h>
@@ -20,7 +21,7 @@ namespace fs = std::filesystem;
 struct DeployOptions {
   fs::path repository;
   std::string mode = "sim", encoder = "robot", input_type = "keyboard", provider;
-  std::string config = "gear_sonic_deploy/bumi3/deploy.yaml";
+  std::string config = "gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_model12.yaml";
   std::string obs_config, policy, smpl_policy, dataset, motion, motion_name, interface;
   std::string zmq_url, zmq_host, zmq_topic, output_dir, runtime_config;
   std::string engine_cache_dir;
@@ -35,7 +36,7 @@ struct DeployOptions {
     DeployOptions options;
     // build/bumi3/bin 下的可执行文件向上查找配置锚点，不嵌入开发机器的编译路径。
     for (auto path = fs::canonical("/proc/self/exe").parent_path(); !path.empty(); path = path.parent_path()) {
-      if (fs::is_regular_file(path / "gear_sonic_deploy/bumi3/deploy.yaml")) {
+      if (fs::is_regular_file(path / "gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_model12.yaml")) {
         options.repository = path;
         break;
       }

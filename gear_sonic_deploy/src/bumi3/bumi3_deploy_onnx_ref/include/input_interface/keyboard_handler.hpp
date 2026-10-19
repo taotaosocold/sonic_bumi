@@ -1,25 +1,21 @@
 #pragma once
 
+#include "input_interface.hpp"
+
 #include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
 #include <vector>
 
 namespace bumi3 {
-// 输入接口只负责取得操作键，不负责切换策略或修改控制状态；GUI 键由部署主类合并。
-class InputInterface {
+class SimpleKeyboard final : public InputInterface {
  public:
-  virtual ~InputInterface() = default;
-  virtual std::vector<int> ReadKeys() = 0;
-};
-
-class KeyboardInput final : public InputInterface {
- public:
-  KeyboardInput() {
+  SimpleKeyboard() {
     // 按键负责真机启动与停止，缺少交互终端时必须明确报错，不能静默忽略全部操作。
     if (!isatty(STDIN_FILENO))
       throw std::runtime_error("Keyboard stdin is not a terminal; run deploy.sh in a foreground terminal (SSH: ssh -t)");
@@ -34,11 +30,11 @@ class KeyboardInput final : public InputInterface {
     active_ = true;
     std::cerr << "BUMI3_KEYBOARD_READY: foreground terminal; press keys without ENTER\n";
   }
-  ~KeyboardInput() override {
+  ~SimpleKeyboard() override {
     if (active_) tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
   }
-  KeyboardInput(const KeyboardInput&) = delete;
-  KeyboardInput& operator=(const KeyboardInput&) = delete;
+  SimpleKeyboard(const SimpleKeyboard&) = delete;
+  SimpleKeyboard& operator=(const SimpleKeyboard&) = delete;
 
   std::vector<int> ReadKeys() override {
     std::vector<int> keys;

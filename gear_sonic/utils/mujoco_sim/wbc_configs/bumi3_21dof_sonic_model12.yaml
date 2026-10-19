@@ -1,5 +1,12 @@
-# All file paths are relative to the sonic_bumi repository root, regardless of cwd.
-# Copy this file to .local/bumi3.yaml to keep machine settings out of git.
+# BUMI3 的统一仿真与部署配置，与同目录 G1 配置使用一致的基础字段命名。
+# 所有资产路径相对于仓库根目录解析；本机差异可复制此文件到 .local/bumi3.yaml 后修改。
+# 关节顺序、模型、PD 增益和时间参数继续引用下方 contract 指定的训练观测配置。
+ROBOT_TYPE: bumi3_21dof
+SIMULATOR: mujoco
+NUM_JOINTS: 21
+# 修改此处即可同步设置下方 ros2.domain_id，无需维护第二份域编号。
+DOMAIN_ID: &bumi3_domain 0
+
 version: 1
 contract: gear_sonic_deploy/policy/bumi3/observation_config.yaml
 policies:
@@ -20,8 +27,8 @@ inference:
   engine_cache_dir: .local/bumi3/tensorrt
   workspace_size_mb: 1024
 ros2:
-  # Keep this identical on the policy and environment machines.
-  domain_id: 1
+  # 使用顶部 DOMAIN_ID 的 YAML 引用，仿真和控制端从同一值初始化通信域。
+  domain_id: *bumi3_domain
   state_topic: /noetix/low_state
   command_topic: /noetix/low_cmd
   request_topic: /noetix/control_request
@@ -37,9 +44,9 @@ teleop:
   stream_timeout: 0.5
 hardware:
   robot_root: gear_sonic_deploy/thirdparty/new_ws/src/noetix_robots/bumi3
-  # Override using a machine-local YAML, or deploy.sh --interface enp1s0.
+  # 通过本机配置副本或 deploy.sh --interface 指定实际 EtherCAT 网卡。
   network: gear_sonic_deploy/thirdparty/new_ws/src/noetix_robots/common/bumi/network.yaml
   io_frequency: 1000
   entry_duration: 3.0
-  # Rotation from IMU sensor coordinates to base_link coordinates, wxyz.
+  # IMU 传感器坐标系到 base_link 的旋转，四元数顺序为 wxyz。
   imu_to_base_wxyz: [1.0, 0.0, 0.0, 0.0]

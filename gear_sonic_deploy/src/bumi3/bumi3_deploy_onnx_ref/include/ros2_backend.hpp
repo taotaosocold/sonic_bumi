@@ -1,6 +1,8 @@
 #pragma once
 
-#include "robot_state.hpp"
+#include "robot_parameters.hpp"
+#include "math_utils.hpp"
+#include "policy_parameters.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <noetix_msgs/msg/low_cmd.hpp>
 #include <noetix_msgs/msg/low_state.hpp>
@@ -17,7 +19,8 @@ namespace bumi3 {
 class RosBackend {
  public:
   explicit RosBackend(const Json& config)
-      : config_(config), settings_(config.at("ros2")), real_(config.at("mode") == "real") {
+      : config_(config), settings_(config.at("ros2")), parameters_(PolicyParameters::Parse(config.at("contract"))),
+        real_(config.at("mode") == "real") {
     sequence_ = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(Time::now().time_since_epoch()).count()) + uint64_t(getpid());
     const auto domain = std::to_string(settings_.at("domain_id").get<int>());
     setenv("ROS_DOMAIN_ID", domain.c_str(), 1);
@@ -27,7 +30,7 @@ class RosBackend {
     request_pub_ = node_->create_publisher<std_msgs::msg::String>(settings_.at("request_topic"), rclcpp::QoS(20).reliable());
     state_sub_ = node_->create_subscription<noetix_msgs::msg::LowState>(
         settings_.at("state_topic"), rclcpp::QoS(1).best_effort(),
-        [this](noetix_msgs::msg::LowState::ConstSharedPtr message) { Receive(*message); });
+        [this](noetix_msgs::msg::LowState::ConstSharedPtr message) { LowStateHandler(*message); });
     const auto rotation = config_.at("imu_to_base_wxyz").get<std::vector<double>>();
     if (rotation.size() != 4) throw std::runtime_error("imu_to_base_wxyz must have four values");
     imu_to_base_ = QuaternionFromWxyz(rotation.data());
@@ -59,7 +62,7 @@ class RosBackend {
     rclcpp::shutdown();
   }
 
-  State GetState() {
+  RobotState GetState() {
     std::lock_guard<std::mutex> lock(mutex_);
     const double timeout = settings_.at("state_timeout");
     if (!valid_ || std::chrono::duration<double>(Time::now() - received_).count() > timeout)
@@ -69,7 +72,7 @@ class RosBackend {
     return state_;
   }
 
-  State WaitForState() {
+  RobotState WaitForState() {
     const auto deadline = Time::now() + std::chrono::seconds(5);
     std::string last_error;
     while (Time::now() < deadline && !stopping) {
@@ -92,7 +95,7 @@ class RosBackend {
 
   void Enable() {
     const auto measured = GetState();
-    const std::vector<double> hold(measured.q.begin(), measured.q.end());
+    const auto hold = parameters_.CreatePositionCommand(measured.q.data());
     const auto deadline = Time::now() + std::chrono::seconds(2);
     while (Time::now() < deadline && !stopping) {
       SendRequest("enable");
@@ -147,23 +150,26 @@ class RosBackend {
     throw std::runtime_error("ROS2 simulation reset not acknowledged");
   }
 
-  void WriteTarget(const std::vector<double>& positions) {
-    if (positions.size() != 21) throw std::runtime_error("Target requires 21 joints");
+  void WriteTarget(const MotorCommand& command) {
     if (real_) GetState();
     noetix_msgs::msg::LowCmd message;
     message.stamp = node_->now();
     message.sequence = ++sequence_;
-    const auto& contract = config_.at("contract");
-    for (int i = 0; i < 21; ++i) {
+    for (int i = 0; i < BUMI3_NUM_MOTOR; ++i) {
       const auto& mapping = config_.at("joint_mappings")[i];
-      double q = positions[i];
-      if (!std::isfinite(q)) throw std::runtime_error("Nonfinite motor target");
+      double q = command.q_target[i];
+      if (!std::isfinite(q) || !std::isfinite(command.dq_target[i]) || !std::isfinite(command.tau_ff[i]) ||
+          !std::isfinite(command.kp[i]) || !std::isfinite(command.kd[i]) || command.kp[i] < 0 || command.kd[i] < 0)
+        throw std::runtime_error("Invalid motor command");
       if (real_) q = std::clamp(q, config_.at("joint_min")[i].get<double>(), config_.at("joint_max")[i].get<double>());
       noetix_msgs::msg::MotorCmd motor;
       motor.name = mapping.at("actuator");
       motor.q = float((q - mapping.at("offset").get<double>()) * mapping.at("direction").get<double>());
-      motor.kp = contract.at("stiffness_policy")[i];
-      motor.kd = contract.at("damping_policy")[i];
+      // 与 G1 的 MotorCommand 字段对应；方向只作用于运动量和力矩，增益不改变符号。
+      motor.dq = command.dq_target[i] * mapping.at("direction").get<double>();
+      motor.tau = command.tau_ff[i] * mapping.at("direction").get<double>();
+      motor.kp = command.kp[i];
+      motor.kd = command.kd[i];
       message.motor_cmd.push_back(motor);
     }
     command_pub_->publish(message);
@@ -206,7 +212,7 @@ class RosBackend {
     }
   }
 
-  void Receive(const noetix_msgs::msg::LowState& message) {
+  void LowStateHandler(const noetix_msgs::msg::LowState& message) {
     std::lock_guard<std::mutex> lock(mutex_);
     ++state_messages_;
     state_.enabled = message.status.enabled;
@@ -221,7 +227,7 @@ class RosBackend {
       std::unordered_map<std::string, const noetix_msgs::msg::MotorState*> motors;
       for (const auto& motor : message.motor_state)
         if (!motors.emplace(motor.name, &motor).second) throw std::runtime_error("Duplicate actuator feedback: " + motor.name);
-      State state;
+      RobotState state;
       for (int i = 0; i < 21; ++i) {
         const auto& mapping = config_.at("joint_mappings")[i];
         const auto name = mapping.at("actuator").get<std::string>();
@@ -257,10 +263,11 @@ class RosBackend {
   }
 
   Json config_, settings_;
+  PolicyParameters parameters_;
   bool real_;
   Quat imu_to_base_ = Quat::Identity();
   std::mutex mutex_;
-  State state_;
+  RobotState state_;
   bool valid_ = false, sim_matches_ = false, seen_key_ = false;
   Time::time_point received_{}, sim_received_{}, status_received_{};
   std::string fault_ = "No LowState message received";

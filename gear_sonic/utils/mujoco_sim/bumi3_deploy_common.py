@@ -10,7 +10,7 @@ import numpy as np
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_DEPLOY_CONFIG = REPO_ROOT / "gear_sonic_deploy/bumi3/deploy.yaml"
+DEFAULT_DEPLOY_CONFIG = REPO_ROOT / "gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_model12.yaml"
 
 
 def repo_path(value: str | Path) -> Path:

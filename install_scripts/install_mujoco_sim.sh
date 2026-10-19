@@ -14,7 +14,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # BUMI3 使用同一个安装入口准备 MuJoCo 环境与原生控制端，默认选择 GPU 推理 SDK。
 if [[ "${1:-}" == "--robot-type" && "${2:-}" == "bumi3" ]]; then
     # ROS Python extension modules must match the environment's Python ABI.
-    bash "$REPO_ROOT/gear_sonic_deploy/scripts/setup_bumi3_ros2.sh" sim
+    bash "$REPO_ROOT/gear_sonic_deploy/scripts/setup_env_bumi3.sh" sim
     VENV_PATH="${BUMI_DEPLOY_VENV:-$REPO_ROOT/.venv_sim}"
     PYTHON_COMMAND="${BUMI_INSTALL_PYTHON:-${BUMI_ROS_PYTHON:-/usr/bin/python3}}"
     # 解释器存在并不代表环境创建完整；中断的创建过程或不完整复制可能缺少配置文件、激活脚本。
@@ -43,7 +43,7 @@ if [[ "${1:-}" == "--robot-type" && "${2:-}" == "bumi3" ]]; then
     ONNX_VERSION=1.23.2 ONNX_VARIANT="$BUMI_ORT_VARIANT" \
         ONNX_INSTALL_PATH="${ONNX_INSTALL_PATH:-${onnxruntime_ROOT:-$BUMI_ORT_DEFAULT}}" \
         bash "$REPO_ROOT/gear_sonic_deploy/scripts/install_deps.sh" --onnxruntime-only
-    echo "BUMI3 environment ready. Source gear_sonic_deploy/scripts/setup_bumi3_ros2.sh before the simulator."
+    echo "BUMI3 environment ready. Source gear_sonic_deploy/scripts/setup_env_bumi3.sh before the simulator."
     echo "After preparing PKLs, convert references before deployment:"
     echo "  source .venv_sim/bin/activate"
     echo "  python gear_sonic_deploy/reference/bumi3_convert_motion.py"

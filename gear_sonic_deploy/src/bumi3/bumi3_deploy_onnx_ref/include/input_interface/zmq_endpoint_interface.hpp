@@ -1,6 +1,7 @@
 #pragma once
 
-#include "robot_state.hpp"
+#include "../robot_parameters.hpp"
+#include "../math_utils.hpp"
 #include <zmq.hpp>
 #include <cstring>
 #include <string>
@@ -8,9 +9,9 @@
 
 namespace bumi3 {
 // 与 G1 共用 PICO 的打包消息协议；BUMI3 只使用已训练的完整 SMPL 输入。
-class ZmqInput {
+class ZMQEndpointInterface {
  public:
-  explicit ZmqInput(const Json& config)
+  explicit ZMQEndpointInterface(const Json& config)
       : socket_(context_, zmq::socket_type::sub), topic_(config.at("topic")), timeout_(config.at("stream_timeout")) {
     socket_.set(zmq::sockopt::linger, 0);
     socket_.set(zmq::sockopt::conflate, 1);

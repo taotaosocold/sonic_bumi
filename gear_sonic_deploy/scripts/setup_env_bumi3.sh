@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# BUMI3 环境入口：控制端由 deploy.sh 自动 source；独立运行的 MuJoCo 端需在自身终端 source。
 # 直接执行时编译内置 new_ws 中部署所需的 Noetix 包，source 时加载 ROS 2 与已编译的包。
 # 编译和安装产物保存在工作空间内，路径从仓库位置解析，不要求个人工作空间或 colcon。
 bumi3_ros2_environment() {
@@ -51,7 +52,7 @@ fi
 set -eo pipefail
 bumi3_ros2_environment
 TASK_MODE="${1:-sim}"
-[[ "$TASK_MODE" == sim || "$TASK_MODE" == real ]] || { echo "Usage: bash setup_bumi3_ros2.sh [sim|real]" >&2; exit 2; }
+[[ "$TASK_MODE" == sim || "$TASK_MODE" == real ]] || { echo "Usage: bash setup_env_bumi3.sh [sim|real]" >&2; exit 2; }
 TASK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TASK_DEPLOY_ROOT="$BUMI_ROS_SOURCE"
 TASK_WORKSPACE_ROOT="$TASK_DEPLOY_ROOT/thirdparty/new_ws"
@@ -74,4 +75,4 @@ if [[ "$TASK_MODE" == real ]]; then
     build_package noetix_robots "$TASK_VENDOR_ROOT/noetix_robots"
     build_package noetix_bridge "$TASK_VENDOR_ROOT/noetix_ros2/noetix_bridge"
 fi
-echo "BUMI3 ROS 2 packages built. Load with: source gear_sonic_deploy/scripts/setup_bumi3_ros2.sh"
+echo "BUMI3 ROS 2 packages built. Load with: source gear_sonic_deploy/scripts/setup_env_bumi3.sh"
