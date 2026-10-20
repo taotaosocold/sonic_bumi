@@ -3,6 +3,7 @@
 #include "../robot_parameters.hpp"
 #include "../math_utils.hpp"
 #include <zmq.hpp>
+#include <atomic>
 #include <cstring>
 #include <string>
 #include <set>
@@ -19,11 +20,12 @@ class ZMQEndpointInterface {
     socket_.connect(config.at("endpoint").get<std::string>());
   }
 
-  PoseWindow WaitForPose(double timeout) {
+  // 切换到遥操作时允许输入线程取消等待，退出不必等满可能长达数分钟的启动超时。
+  PoseWindow WaitForPose(double timeout, const std::atomic<bool>* stop_requested = nullptr) {
     valid_ = false;
     window_.last = -1;
     const auto deadline = Time::now() + std::chrono::duration<double>(timeout);
-    while (Time::now() < deadline && !stopping) {
+    while (Time::now() < deadline && !stopping && !(stop_requested && stop_requested->load())) {
       Poll(20);
       if (valid_) return window_;
     }

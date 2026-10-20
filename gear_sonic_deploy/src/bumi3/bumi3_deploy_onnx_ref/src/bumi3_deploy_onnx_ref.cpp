@@ -7,7 +7,11 @@
 #include "control_policy.hpp"
 #include "ros2_backend.hpp"
 #include "state_logger.hpp"
+#include "utils.hpp"
 #include "input_interface/zmq_endpoint_interface.hpp"
+#include <atomic>
+#include <condition_variable>
+#include <exception>
 #include <functional>
 #include <optional>
 
@@ -82,34 +86,112 @@ class Bumi3Deploy {
       std::cout << "BUMI3_NATIVE_CONFIG_OK: policy/observations validated; no device connected\n";
       return;
     }
-    const auto started = Time::now();
-    while (!stopping && !operator_state.stop && program_state_ != ProgramState::STOPPED) {
-      const auto tick = Time::now();
-      if (!config_.at("duration").is_null() &&
-          std::chrono::duration<double>(tick - started).count() >= config_.at("duration").get<double>()) break;
-      Input();
-      if (stopping || operator_state.stop) break;
-      Control();
-      LowCommandWriter();
-      std::this_thread::sleep_until(tick + std::chrono::duration<double>(control_dt_));
+    try {
+      // 输入、控制和命令发布分别调度，频率与 G1 对应；ROS2 回调继续由后端接收线程执行。
+      input_thread_ = CreateRecurrentThread("Input", input_dt_, &Bumi3Deploy::Input);
+      command_writer_thread_ = CreateRecurrentThread("command_writer", publish_dt_, &Bumi3Deploy::LowCommandWriter);
+      control_thread_ = CreateRecurrentThread("control", control_dt_, &Bumi3Deploy::Control);
+      std::cout << "BUMI3_THREADS_READY input_hz=100 control_hz=50 command_hz=500\n";
+      const auto started = Time::now();
+      while (!StopRequested()) {
+        if (!config_.at("duration").is_null() &&
+            std::chrono::duration<double>(Time::now() - started).count() >= config_.at("duration").get<double>()) break;
+        // 信号处理器只设置标志，因此主线程定期检查信号；普通停止通过条件变量立即唤醒。
+        std::unique_lock<std::mutex> lock(wakeup_mutex_);
+        wakeup_.wait_for(lock, std::chrono::milliseconds(10), [this] { return StopRequested(); });
+      }
+    } catch (...) {
+      // 即使只成功创建了部分线程，也先关闭下发入口并回收这些线程，再向调用者报告错误。
+      Stop(false);
+      throw;
     }
-    Stop();
+    std::exception_ptr failure;
+    {
+      std::lock_guard<std::mutex> lock(error_mutex_);
+      failure = thread_error_;
+    }
+    Stop(!failure);
+    if (failure) std::rethrow_exception(failure);
   }
 
   void Stop(bool require_ack = true) {
-    if (!backend_ || program_state_ == ProgramState::STOPPED) return;
+    if (stopped_) return;
+    stopped_ = true;
+    RequestStop();
+    std::exception_ptr failure;
+    if (backend_) {
+      // 先禁止新的使能、重置与目标发布，再请求去使能；不等待可能尚在返回的 GPU 推理。
+      backend_->RequestStop();
+      ClearMotorCommand();
+      try { backend_->Disable(require_ack); }
+      catch (...) { failure = std::current_exception(); }
+    }
+    if (input_thread_.joinable()) input_thread_.join();
+    if (control_thread_.joinable()) control_thread_.join();
+    if (command_writer_thread_.joinable()) command_writer_thread_.join();
+    // 状态机只由控制线程修改；回收线程后主线程才能写入终止状态或释放输入接口。
     program_state_ = ProgramState::STOPPED;
     operator_state.stop = true;
     enabled_ = false;
-    if (require_ack) backend_->Disable();
-    else {
-      try { backend_->Disable(false); }
+    input_interface_.reset();
+    if (failure && require_ack) std::rethrow_exception(failure);
+    if (failure) {
+      try { std::rethrow_exception(failure); }
       catch (const std::exception& error) { std::cerr << "BUMI3_STOP_ERROR: " << error.what() << '\n'; }
     }
   }
 
  private:
   OperatorState operator_state;
+
+  bool StopRequested() const { return stopping || stop_requested_.load(); }
+
+  void RequestStop() {
+    stop_requested_.store(true);
+    wakeup_.notify_all();
+  }
+
+  std::thread CreateRecurrentThread(const char* name, double dt, void (Bumi3Deploy::*callback)()) {
+    return std::thread([this, name, dt, callback] {
+      try {
+        const auto period = std::chrono::duration_cast<Time::duration>(std::chrono::duration<double>(dt));
+        auto next = Time::now();
+        while (!StopRequested()) {
+          (this->*callback)();
+          next += period;
+          // 超时后跳过遗漏的调度周期，避免集中补发旧命令或快速推进多帧参考动作。
+          if (next < Time::now()) next = Time::now() + period;
+          std::unique_lock<std::mutex> lock(wakeup_mutex_);
+          wakeup_.wait_until(lock, next, [this] { return StopRequested(); });
+        }
+      } catch (...) {
+        // 工作线程不得让异常逃逸触发 terminate；保留首个错误，由主线程停止硬件并报告。
+        std::lock_guard<std::mutex> lock(error_mutex_);
+        if (!StopRequested()) {
+          if (!thread_error_) thread_error_ = std::current_exception();
+          std::cerr << "BUMI3_THREAD_ERROR thread=" << name << '\n';
+          RequestStop();
+        }
+      }
+    });
+  }
+
+  void SetMotorCommand(MotorCommand command) {
+    std::lock_guard<std::mutex> lock(command_publish_mutex_);
+    if (!StopRequested()) motor_command_buffer_.SetData(std::move(command));
+  }
+
+  void ClearMotorCommand() {
+    // 清空操作与实际发布串行，返回后不会再发出切换动作或重置之前取得的命令快照。
+    std::lock_guard<std::mutex> lock(command_publish_mutex_);
+    motor_command_buffer_.Clear();
+  }
+
+  void RefreshHoldingCommand() {
+    std::lock_guard<std::mutex> lock(command_publish_mutex_);
+    const auto snapshot = motor_command_buffer_.GetDataWithTime();
+    if (!StopRequested() && snapshot.data) motor_command_buffer_.SetData(*snapshot.data);
+  }
 
   using ObservationFunction = std::function<bool(std::vector<double>&, std::size_t)>;
   struct ObservationRegistry {
@@ -359,6 +441,7 @@ class Bumi3Deploy {
   // 仿真初始化属于环境职责，独立于朝向对齐和观测采集；真机不允许执行位置瞬移。
   void ResetSimulation() {
     if (real_) throw std::runtime_error("Hardware cannot teleport");
+    ClearMotorCommand();
     const auto positions = live_ ? config_.at("static_qpos").get<std::vector<double>>()
                                 : std::vector<double>(current_motion_->MujocoPositions(current_frame_),
                                                       current_motion_->MujocoPositions(current_frame_) + 28);
@@ -371,7 +454,7 @@ class Bumi3Deploy {
     // qpos 的驱动关节顺序不是策略顺序，初始化目标只能从策略参考或默认姿态读取。
     MotorCommand command = policy_parameters_.CreatePositionCommand(
         live_ ? policy_parameters_.default_angles.data() : current_motion_->JointPositions(current_frame_));
-    motor_command_buffer_ = std::move(command);
+    SetMotorCommand(std::move(command));
   }
 
   bool InitControl() {
@@ -404,7 +487,7 @@ class Bumi3Deploy {
         const double end = live_ ? policy_parameters_.default_angles[i] : current_motion_->JointPositions(current_frame_)[i];
         command.q_target[i] = entry_start_[i] + (end - entry_start_[i]) * entry_step_ / steps;
       }
-      motor_command_buffer_ = std::move(command);
+      SetMotorCommand(std::move(command));
       return true;
     }
     // 姿态过渡完成只进入 PD 保持，不沿用按 ] 设置的启动标志自动运行策略。
@@ -429,8 +512,26 @@ class Bumi3Deploy {
   }
 
   void Input() {
-    for (const auto key : ReadKeys()) {
-      if (key == 'O') { operator_state.stop = true; return; }
+    auto keys = ReadKeys();
+    if (std::find(keys.begin(), keys.end(), 'O') != keys.end()) {
+      // 停止请求直接唤醒主线程，不等待推理结束，也不排在普通按键队列后面。
+      RequestStop();
+      return;
+    }
+    std::lock_guard<std::mutex> lock(input_mutex_);
+    if (pending_keys_.size() + keys.size() > 128) throw std::runtime_error("BUMI3 input queue overflow");
+    pending_keys_.insert(pending_keys_.end(), keys.begin(), keys.end());
+  }
+
+  void ApplyInputCommands() {
+    std::vector<int> keys;
+    {
+      std::lock_guard<std::mutex> lock(input_mutex_);
+      keys.swap(pending_keys_);
+    }
+    // 只有控制线程改变播放、动作、观测布局与状态机；输入线程只提交有序按键。
+    for (const auto key : keys) {
+      if (StopRequested()) return;
       // 与 G1 的 INIT 状态对应，进入姿态期间仅处理停止，不允许切换正在过渡的参考。
       if (real_ && entry_started_) continue;
       if (key == ']' && real_ && !enabled_) {
@@ -461,9 +562,9 @@ class Bumi3Deploy {
         if (real_ && program_state_ == ProgramState::WAIT_FOR_CONTROL)
           operator_state.start = operator_state.play;
       } else if ((key == 'P' || key == 'R') && !live_) {
+        ClearMotorCommand();
         backend_->Disable();
         enabled_ = false;
-        motor_command_buffer_.reset();
         operator_state.play = false;
         operator_state.start = false;
         current_frame_ = 0;
@@ -475,14 +576,14 @@ class Bumi3Deploy {
         program_state_ = ProgramState::INIT;
         std::cout << "BUMI3_MOTION=" << current_motion_->name << '\n';
       } else if ((key == '\n' || key == '\r') && has_live_ && has_offline_) {
+        ClearMotorCommand();
         backend_->Disable();
         enabled_ = false;
-        motor_command_buffer_.reset();
         operator_state.play = false;
         operator_state.start = false;
         live_ = !live_;
         if (live_) {
-          frozen_pose_ = zmq_interface_->WaitForPose(config_.at("teleop").at("startup_timeout"));
+          frozen_pose_ = zmq_interface_->WaitForPose(config_.at("teleop").at("startup_timeout"), &stop_requested_);
           live_pose_snapshot_ = frozen_pose_;
         }
         current_encoder_mode_ = live_ || offline_smpl_ ? 1 : 0;
@@ -505,15 +606,21 @@ class Bumi3Deploy {
       command.q_target[i] = policy_parameters_.default_angles[i] + policy_parameters_.action_scale[i] * last_action[i];
     if (!real_ && !live_ && current_motion_->has_robot_reference)
       command.reference_qpos.assign(current_motion_->MujocoPositions(current_frame_), current_motion_->MujocoPositions(current_frame_) + 28);
-    motor_command_buffer_ = std::move(command);
+    SetMotorCommand(std::move(command));
     return true;
   }
 
   void LowCommandWriter() {
-    if (!enabled_ || !motor_command_buffer_ || operator_state.stop) return;
-    backend_->WriteTarget(*motor_command_buffer_);
+    std::lock_guard<std::mutex> lock(command_publish_mutex_);
+    if (StopRequested()) return;
+    const auto snapshot = motor_command_buffer_.GetDataWithTime();
+    if (!snapshot.data) return;
+    // 时间戳来自控制线程，500 Hz 重发不续期；推理停滞不能靠重复发送掩盖环境端超时。
+    if (snapshot.GetAgeMs() > config_.at("command_timeout").get<double>() * 1000.)
+      throw std::runtime_error("BUMI3 control command stale; stopping publication");
+    backend_->WriteTarget(*snapshot.data);
     // 参考影子保存于命令快照，不能在游标推进后再读取下一帧来显示上一条命令。
-    backend_->WriteReference(motor_command_buffer_->reference_qpos);
+    backend_->WriteReference(snapshot.data->reference_qpos);
   }
 
   bool CurrentFrameAdvancement() {
@@ -527,9 +634,11 @@ class Bumi3Deploy {
   }
 
   // 与 G1 的 CONTROL 执行顺序对应：反馈历史 → 输入快照 → 朝向 → 观测 → 策略命令 → 游标。
-  // 命令写入后由 Run 中的 LowCommandWriter 下发；SDK 环境端维持自身的高频 I/O。
+  // 控制线程生成不可变命令快照，由独立发送线程重发；SDK 环境端维持自身的高频 I/O。
   void Control() {
-    if (operator_state.stop) return;
+    if (StopRequested()) return;
+    ApplyInputCommands();
+    if (StopRequested()) return;
     if (!CheckSafety()) throw std::runtime_error("BUMI3 safety check failed");
     switch (program_state_) {
       case ProgramState::INIT:
@@ -548,6 +657,8 @@ class Bumi3Deploy {
           operator_state.start = false;
           program_state_ = ProgramState::CONTROL;
         }
+        // 准备姿态可无限等待 T，但需要控制线程持续确认状态正常，才能续期同一保持目标。
+        if (enabled_) RefreshHoldingCommand();
         break;
       case ProgramState::CONTROL:
         if (!GatherRobotStateToLogger()) throw std::runtime_error("Failed to gather robot state history");
@@ -571,13 +682,22 @@ class Bumi3Deploy {
   bool live_ = false, enabled_ = false, entry_started_ = false, reset_with_reference_velocity_ = false;
   bool reinitialize_heading_ = true;
   double control_dt_ = 0.02;
+  const double input_dt_ = 0.01, publish_dt_ = 0.002;
   int current_frame_ = 0, current_encoder_mode_ = 0, saved_frame_for_observation_window_ = 0, entry_step_ = 0;
   HeadingState heading_state_;
   RobotState used_low_state_data_;
   std::array<double, BUMI3_NUM_MOTOR> entry_start_{};
   std::vector<double> last_action, obs_buffer_, encoder_obs_buffer_;
   std::vector<ActiveObservation> active_obs_functions_, active_encoder_obs_functions_;
-  std::optional<MotorCommand> motor_command_buffer_;
+  DataBuffer<MotorCommand> motor_command_buffer_;
+  // 动作与观测只由控制线程拥有；跨线程仅共享按键队列、命令快照、停止标志和异常。
+  std::thread input_thread_, command_writer_thread_, control_thread_;
+  std::atomic<bool> stop_requested_{false};
+  bool stopped_ = false;
+  std::mutex input_mutex_, command_publish_mutex_, error_mutex_, wakeup_mutex_;
+  std::condition_variable wakeup_;
+  std::vector<int> pending_keys_;
+  std::exception_ptr thread_error_;
   MotionDataReader motion_reader_;
   std::shared_ptr<const MotionSequence> current_motion_;
   std::unique_ptr<PolicyEngine> offline_policy_, live_policy_;

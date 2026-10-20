@@ -8,6 +8,7 @@
 #include <noetix_msgs/msg/low_state.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <atomic>
 #include <cstdlib>
 #include <mutex>
 #include <thread>
@@ -93,11 +94,18 @@ class RosBackend {
     return keys;
   }
 
+  // 与命令发布共用短锁，返回后任何工作线程都不能再发送使能、重置或非零目标。
+  // 去使能仍允许发送，主线程可在等待推理线程回收前先通知环境端停止。
+  void RequestStop() {
+    std::lock_guard<std::mutex> lock(publish_mutex_);
+    stop_requested_.store(true);
+  }
+
   void Enable() {
     const auto measured = GetState();
     const auto hold = parameters_.CreatePositionCommand(measured.q.data());
     const auto deadline = Time::now() + std::chrono::seconds(2);
-    while (Time::now() < deadline && !stopping) {
+    while (Time::now() < deadline && !stopping && !stop_requested_.load()) {
       SendRequest("enable");
       WriteTarget(hold);
       try { if (GetState().enabled) return; } catch (const std::exception&) {}
@@ -118,8 +126,14 @@ class RosBackend {
     const auto requested = Time::now();
     const auto deadline = requested + std::chrono::milliseconds(300);
     do {
-      command_pub_->publish(zero);
-      SendRequest("disable");
+      {
+        // 零目标与禁用请求成对发布，不能在二者之间插入发送线程的策略目标。
+        std::lock_guard<std::mutex> lock(publish_mutex_);
+        command_pub_->publish(zero);
+        std_msgs::msg::String request;
+        request.data = "disable";
+        request_pub_->publish(request);
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
       std::lock_guard<std::mutex> lock(mutex_);
       if (status_received_ >= requested && !state_.enabled) return;
@@ -138,8 +152,12 @@ class RosBackend {
     message.data.insert(message.data.end(), qpos.begin(), qpos.end());
     message.data.insert(message.data.end(), qvel.begin(), qvel.end());
     const auto deadline = Time::now() + std::chrono::seconds(2);
-    while (Time::now() < deadline && !stopping) {
-      reset_pub_->publish(message);
+    while (Time::now() < deadline && !stopping && !stop_requested_.load()) {
+      {
+        std::lock_guard<std::mutex> lock(publish_mutex_);
+        if (stop_requested_.load()) break;
+        reset_pub_->publish(message);
+      }
       {
         std::lock_guard<std::mutex> lock(mutex_);
         // 必须等 reset 对应的新反馈，防止用重置前的机器人状态初始化观测历史。
@@ -151,6 +169,8 @@ class RosBackend {
   }
 
   void WriteTarget(const MotorCommand& command) {
+    std::lock_guard<std::mutex> lock(publish_mutex_);
+    if (stopping || stop_requested_.load()) throw std::runtime_error("ROS2 target publication cancelled");
     if (real_) GetState();
     noetix_msgs::msg::LowCmd message;
     message.stamp = node_->now();
@@ -177,6 +197,8 @@ class RosBackend {
 
   // 只发送环境端的参考影子；动作缩放已由 CreatePolicyCommand 完成，后端不再参与策略处理。
   void WriteReference(const std::vector<double>& reference) {
+    std::lock_guard<std::mutex> lock(publish_mutex_);
+    if (stopping || stop_requested_.load()) return;
     if (!reference_pub_) return;
     if (!reference.empty() && reference.size() != 28) throw std::runtime_error("Reference qpos requires 28 values");
     std_msgs::msg::Float64MultiArray message;
@@ -186,6 +208,9 @@ class RosBackend {
 
  private:
   void SendRequest(const std::string& value) {
+    std::lock_guard<std::mutex> lock(publish_mutex_);
+    if (value == "enable" && (stopping || stop_requested_.load()))
+      throw std::runtime_error("ROS2 enable cancelled");
     std_msgs::msg::String message;
     message.data = value;
     request_pub_->publish(message);
@@ -267,12 +292,16 @@ class RosBackend {
   bool real_;
   Quat imu_to_base_ = Quat::Identity();
   std::mutex mutex_;
+  std::mutex publish_mutex_;
+  std::atomic<bool> stop_requested_{false};
   RobotState state_;
   bool valid_ = false, sim_matches_ = false, seen_key_ = false;
   Time::time_point received_{}, sim_received_{}, status_received_{};
   std::string fault_ = "No LowState message received";
   uint64_t state_messages_ = 0;
-  uint64_t sequence_ = 0, state_sequence_ = 0, ack_ = 0, ack_state_sequence_ = 0, key_sequence_ = 0;
+  // 重置与禁用握手也会分配序号，使用原子计数避免与周期发送线程并发递增。
+  std::atomic<uint64_t> sequence_{0};
+  uint64_t state_sequence_ = 0, ack_ = 0, ack_state_sequence_ = 0, key_sequence_ = 0;
   std::vector<int> keys_;
   rclcpp::Node::SharedPtr node_;
   std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
