@@ -115,6 +115,16 @@ bash gear_sonic_deploy/deploy.sh --robot-type bumi3 sim --encoder smpl
 - 按实际硬件设置 `gear_sonic_deploy/thirdparty/new_ws/src/noetix_robots/common/bumi/network.yaml`。USB IMU 示例为 `imu.usb.enable: true`、`imu.usb.port: /dev/ttyACM0`；网卡通过启动参数指定。
 - 机器人供电、网线、IMU 和实体急停正常；首次动作前完成关节映射检查，并提供机械支撑。一次只运行一个机器人控制程序。
 
+运行前先导入安装的TensorRT的路径和CUDA路径，不同电脑上如果路径不一样去修改一下两个变量的路径即可：
+```bash
+export CUDA_HOME=/usr/local/cuda-12.8
+export TensorRT_ROOT="$HOME/sonic/.deps/TensorRT-10.13.0.35"
+```
+然后执行命令
+```bash
+export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$TensorRT_ROOT/targets/x86_64-linux-gnu/lib:$TensorRT_ROOT/lib:$CUDA_HOME/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}:$HOME/app/miniconda3/lib"
+```
+
 新终端加载第 1 节的环境和 GPU 库路径，再执行（替换为本机 EtherCAT 网卡）：
 
 ```bash
@@ -154,6 +164,8 @@ SKIP_SIM_AND_UNITREE=1 bash install_scripts/install_pico.sh
 **终端一：**加载第 1 节的仿真环境，然后启动 MuJoCo：
 
 ```bash
+source .venv_sim/bin/activate
+source gear_sonic_deploy/scripts/setup_env_bumi3.sh
 python gear_sonic/scripts/run_sim_loop.py --robot-type bumi3
 ```
 
