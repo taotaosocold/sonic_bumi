@@ -23,11 +23,6 @@ JOINTS = (
     "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_hand", "right_hand",
 )
 PARENTS = (-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21)
-TIMESTAMP_GETTERS = {
-    "body_joints": "get_body_joints_timestamp",
-    "body": "get_body_timestamp_ns",
-    "stream": "get_time_stamp_ns",
-}
 PC_SERVICE_SCRIPT = Path("/opt/apps/roboticsservice/runService.sh")
 
 
@@ -35,6 +30,13 @@ def positive(value):
     number = float(value)
     if not np.isfinite(number) or number <= 0:
         raise argparse.ArgumentTypeError("必须是大于 0 的有限数值")
+    return number
+
+
+def nonnegative(value):
+    number = float(value)
+    if not np.isfinite(number) or number < 0:
+        raise argparse.ArgumentTypeError("必须是大于或等于 0 的有限数值")
     return number
 
 
@@ -72,50 +74,17 @@ def metric_series(poses, up_axis):
     return metrics
 
 
-def timestamp_candidates(xrt):
-    """Return every non-zero SDK timestamp that can identify a new message."""
-    candidates = {}
-    for name, getter_name in TIMESTAMP_GETTERS.items():
-        getter = getattr(xrt, getter_name, None)
-        if getter is None:
-            continue
-        try:
-            values = np.asarray(getter(), dtype=np.int64).reshape(-1)
-        except (TypeError, ValueError, RuntimeError):
-            continue
-        if np.any(values > 0):
-            candidates[name] = tuple(int(v) for v in values)
-    return candidates
-
-
-def timestamp(xrt, source=None):
-    # Some Unity clients omit Body.timeStampNs; prefer per-joint timestamps.
-    candidates = timestamp_candidates(xrt)
-    if source and source in candidates:
-        return source, candidates[source]
-    for name in TIMESTAMP_GETTERS:
-        if name in candidates:
-            return name, candidates[name]
-    return source, None
-
-
 def describe_record_timeout(stats):
     if stats["body_available"] == 0:
-        return (
-            "SDK 未报告 Body 数据可用。请确认 XRoboToolkit PC Service 状态为 WORKING，"
-            "头显中已选择 PICO Motion Tracker 的 Full-body，并开启 Send。"
-        )
+        return "等待期间 SDK 一直未报告 Body 数据可用；请检查 PC Service、Full-body 和 Send。"
     if stats["new_timestamp"] == 0:
-        return (
-            "SDK 报告有 Body 数据，但时间戳没有更新。请关闭再开启 Send，"
-            "重新连接 PC Service，并重新进入 Full-body。"
-        )
+        return "Body 标志可用，但 get_time_stamp_ns() 没有更新；请检查 PICO 数据流是否停住。"
     if stats["invalid"]:
         return (
-            f"收到 {stats['new_timestamp']} 个新 Body 消息，但 {stats['invalid']} 帧骨架无效"
-            f"（最近原因：{stats['last_invalid']}）。请确认 Full-body 已完成校准。"
+            f"读取到 {stats['new_timestamp']} 个新时间戳，但 {stats['invalid']} 帧数据形状或数值无效"
+            f"（最近原因：{stats['last_invalid']}）。"
         )
-    return "未收到有效的新骨架帧：请检查 PC Service、Full-body、Send 和网络连接"
+    return "等待有效新帧超时。请检查 PC Service、Full-body、Send 和网络连接。"
 
 
 def start_pc_service(skip_start):
@@ -145,12 +114,16 @@ def record(args):
     print(f"记录设置身高：{args.height:g} cm（仅记录标签，不会替你修改 PICO 设置）", flush=True)
     print("请先在 PICO 修改身高、重新校准，在 XRoboToolkit 开启 Full-body 和 Send。", flush=True)
     frames, stamps, host_times = [], [], []
-    source = None
-    previous = {}
+    previous_stamp = None
     start = None
     last_fresh = None
     skipped = 0
-    stats = {"body_available": 0, "new_timestamp": 0, "invalid": 0, "last_invalid": "无"}
+    stats = {
+        "body_available": 0,
+        "new_timestamp": 0,
+        "invalid": 0,
+        "last_invalid": "无",
+    }
     last_report = -1
     interrupted = False
     start_pc_service(args.no_start_pc_service)
@@ -160,31 +133,40 @@ def record(args):
         print(f"保持直立、双脚平放、姿态一致；{args.countdown:g} 秒后等待新数据。", flush=True)
         time.sleep(args.countdown)
         last_fresh = time.monotonic()
-        # Establish a baseline: cached data from an old session must not start a recording.
-        previous = timestamp_candidates(xrt)
+        print("Waiting for body tracking data...", flush=True)
+        last_wait_message = 0.0
+        # Match pico_manager_thread_server._init_input_source(): do not read poses
+        # until the SDK has received its first Body message.
+        while not xrt.is_body_data_available():
+            if args.timeout and time.monotonic() - last_fresh > args.timeout:
+                raise RuntimeError(describe_record_timeout(stats))
+            now = time.monotonic()
+            if now - last_wait_message >= 1.0:
+                print("waiting for body data...", flush=True)
+                last_wait_message = now
+            time.sleep(0.01)
+        print("Body data available! Capturing raw PICO [24,7] poses...", flush=True)
         while start is None or time.monotonic() - start < args.seconds:
             now = time.monotonic()
-            if now - last_fresh > args.timeout:
+            if args.timeout and now - last_fresh > args.timeout:
                 raise RuntimeError(describe_record_timeout(stats))
             if not xrt.is_body_data_available():
                 time.sleep(0.005)
                 continue
             stats["body_available"] += 1
-            candidates = timestamp_candidates(xrt)
-            current_source, current = next(
-                ((name, candidates[name]) for name in TIMESTAMP_GETTERS
-                 if name in candidates and candidates[name] != previous.get(name)),
-                (None, None),
-            )
-            if current is None:
-                time.sleep(0.002)
+            # PicoReader uses this same stream timestamp to detect each new frame.
+            stamp_ns = int(xrt.get_time_stamp_ns())
+            if previous_stamp is not None and stamp_ns == previous_stamp:
+                time.sleep(0.000001)
                 continue
-            source = current_source
-            previous[current_source] = current
+            previous_stamp = stamp_ns
             stats["new_timestamp"] += 1
             pose = np.asarray(xrt.get_body_joints_pose(), dtype=np.float64)
             try:
-                validate_poses(pose[None])
+                if pose.shape != (24, 7):
+                    raise ValueError(f"需要 [24,7]，实际为 {pose.shape}")
+                if not np.isfinite(pose).all():
+                    raise ValueError("位姿含 NaN/Inf")
             except ValueError as exc:
                 skipped += 1
                 stats["invalid"] += 1
@@ -194,11 +176,9 @@ def record(args):
             last_fresh = now
             if start is None:
                 start = now
-                print(f"收到新数据，开始采集；时间戳来源：{source}", flush=True)
-                if source == "stream":
-                    print("注意：SDK 仅提供总消息时间戳，无法严格验证骨架自身的新鲜度。", flush=True)
+                print("收到新数据，开始采集；时间戳来源：get_time_stamp_ns()（与 PicoReader 相同）", flush=True)
             frames.append(pose.copy())
-            stamps.append(current)
+            stamps.append(stamp_ns)
             host_times.append(time.time_ns())
             elapsed = int(now - start)
             if elapsed != last_report:
@@ -207,32 +187,39 @@ def record(args):
             time.sleep(1.0 / args.hz)
     except KeyboardInterrupt:
         interrupted = True
-        print("采集被中断，将保存已获取的数据。")
+        print("采集被中断，将保存已获取的数据。", flush=True)
     finally:
-        xrt.close()
+        try:
+            if frames:
+                metadata = {
+                    "setting_height_cm": args.height,
+                    "up_axis": args.up_axis,
+                    "position_unit": "m",
+                    "quaternion_order": "xyzw",
+                    "timestamp_source": "get_time_stamp_ns",
+                    "created_utc": datetime.now(timezone.utc).isoformat(),
+                    "requested_seconds": args.seconds,
+                    "sample_rate_limit_hz": args.hz,
+                    "interrupted": interrupted,
+                    "skipped_invalid_frames": skipped,
+                }
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                with args.out.open("xb") as output:
+                    np.savez_compressed(
+                        output,
+                        poses=np.stack(frames),
+                        sdk_timestamps=np.asarray(stamps, dtype=np.int64),
+                        host_time_ns=np.asarray(host_times, dtype=np.int64),
+                        joint_names=np.asarray(JOINTS),
+                        parents=np.asarray(PARENTS),
+                        metadata=np.asarray(json.dumps(metadata, ensure_ascii=False)),
+                    )
+                print(f"已保存 {len(frames)} 帧：{args.out.resolve()}")
+        finally:
+            # Save before SDK teardown: the vendor SDK may abort during PXREADeinit.
+            xrt.close()
     if not frames:
         raise RuntimeError("没有采集到数据")
-    metadata = {
-        "setting_height_cm": args.height,
-        "up_axis": args.up_axis,
-        "position_unit": "m",
-        "quaternion_order": "xyzw",
-        "timestamp_source": source,
-        "created_utc": datetime.now(timezone.utc).isoformat(),
-        "requested_seconds": args.seconds,
-        "sample_rate_limit_hz": args.hz,
-        "interrupted": interrupted,
-        "skipped_invalid_frames": skipped,
-    }
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    with args.out.open("xb") as output:
-        np.savez_compressed(
-            output, poses=np.stack(frames), sdk_timestamps=np.asarray(stamps, dtype=np.int64),
-            host_time_ns=np.asarray(host_times, dtype=np.int64),
-            joint_names=np.asarray(JOINTS), parents=np.asarray(PARENTS),
-            metadata=np.asarray(json.dumps(metadata, ensure_ascii=False)),
-        )
-    print(f"已保存 {len(frames)} 帧：{args.out.resolve()}")
 
 
 def probe(args):
@@ -246,25 +233,27 @@ def probe(args):
     start_pc_service(args.no_start_pc_service)
     xrt.init()
     total = available = new_messages = valid = invalid = 0
-    last_timestamps = timestamp_candidates(xrt)
+    last_timestamp = None
     last_invalid = "无"
     try:
         deadline = time.monotonic() + args.seconds
         while time.monotonic() < deadline:
             total += 1
             body_available = bool(xrt.is_body_data_available())
-            candidates = timestamp_candidates(xrt)
-            fresh = [name for name in TIMESTAMP_GETTERS
-                     if name in candidates and candidates[name] != last_timestamps.get(name)]
             if body_available:
                 available += 1
-            if fresh:
+                stamp_ns = int(xrt.get_time_stamp_ns())
+            else:
+                stamp_ns = None
+            if body_available and (last_timestamp is None or stamp_ns != last_timestamp):
+                last_timestamp = stamp_ns
                 new_messages += 1
-                for name in fresh:
-                    last_timestamps[name] = candidates[name]
                 try:
                     pose = np.asarray(xrt.get_body_joints_pose(), dtype=np.float64)
-                    validate_poses(pose[None])
+                    if pose.shape != (24, 7):
+                        raise ValueError(f"需要 [24,7]，实际为 {pose.shape}")
+                    if not np.isfinite(pose).all():
+                        raise ValueError("位姿含 NaN/Inf")
                     valid += 1
                 except ValueError as exc:
                     invalid += 1
@@ -353,7 +342,10 @@ def main():
     rec.add_argument("--seconds", type=positive, default=10, help="采集秒数，默认 10")
     rec.add_argument("--hz", type=positive, default=50, help="读取频率上限，默认 50 Hz")
     rec.add_argument("--countdown", type=positive, default=3, help="采集前等待秒数，默认 3")
-    rec.add_argument("--timeout", type=positive, default=60, help="等待有效新数据的超时秒数，默认 60")
+    rec.add_argument(
+        "--timeout", type=nonnegative, default=0,
+        help="等待 Body/新帧的超时秒数；默认 0 表示一直等待，与 manager 一致",
+    )
     rec.add_argument("--up-axis", choices=("x", "y", "z"), default="y", help="原始 PICO 默认 Y-up")
     rec.add_argument("--no-start-pc-service", action="store_true", help="不执行 runService.sh；仅在服务已由外部启动时使用")
     probe_parser = sub.add_parser("probe", help="诊断 XRoboToolkit 是否正在提供有效的 PICO Body 流")
