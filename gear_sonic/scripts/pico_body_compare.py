@@ -10,6 +10,7 @@ import csv
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -27,6 +28,7 @@ TIMESTAMP_GETTERS = {
     "body": "get_body_timestamp_ns",
     "stream": "get_time_stamp_ns",
 }
+PC_SERVICE_SCRIPT = Path("/opt/apps/roboticsservice/runService.sh")
 
 
 def positive(value):
@@ -116,6 +118,20 @@ def describe_record_timeout(stats):
     return "未收到有效的新骨架帧：请检查 PC Service、Full-body、Send 和网络连接"
 
 
+def start_pc_service(skip_start):
+    """Match pico_manager_thread_server.py's XRoboToolkit startup sequence."""
+    if skip_start:
+        print("不启动 PC Service：使用已经运行的 XRoboToolkit 服务。", flush=True)
+        return
+    if not PC_SERVICE_SCRIPT.is_file():
+        raise RuntimeError(
+            f"找不到 XRoboToolkit PC Service 启动脚本：{PC_SERVICE_SCRIPT}；"
+            "请用 --no-start-pc-service 并自行启动服务。"
+        )
+    subprocess.Popen(["bash", str(PC_SERVICE_SCRIPT)])
+    print("已按 pico_manager_thread_server.py 的方式启动 XRoboToolkit PC Service。", flush=True)
+
+
 def record(args):
     if args.out.suffix != ".npz":
         raise ValueError("采集输出文件必须以 .npz 结尾")
@@ -139,6 +155,7 @@ def record(args):
     stats = {"body_available": 0, "new_timestamp": 0, "invalid": 0, "last_invalid": "无"}
     last_report = -1
     interrupted = False
+    start_pc_service(args.no_start_pc_service)
     xrt.init()
     try:
         # Establish a baseline: cached data from an old session must not start a recording.
@@ -224,6 +241,7 @@ def probe(args):
         raise RuntimeError("请使用 sonic_bumi 已安装 xrobotoolkit_sdk 的 teleop Python 环境") from exc
 
     print(f"探测 {args.seconds:g} 秒：只读取 XRoboToolkit Body 流，不启动 SONIC 或机器人。", flush=True)
+    start_pc_service(args.no_start_pc_service)
     xrt.init()
     total = available = new_messages = valid = invalid = 0
     last_timestamps = timestamp_candidates(xrt)
@@ -335,9 +353,11 @@ def main():
     rec.add_argument("--countdown", type=positive, default=3, help="采集前等待秒数，默认 3")
     rec.add_argument("--timeout", type=positive, default=10, help="等待有效新数据的超时秒数，默认 10")
     rec.add_argument("--up-axis", choices=("x", "y", "z"), default="y", help="原始 PICO 默认 Y-up")
+    rec.add_argument("--no-start-pc-service", action="store_true", help="不执行 runService.sh；仅在服务已由外部启动时使用")
     probe_parser = sub.add_parser("probe", help="诊断 XRoboToolkit 是否正在提供有效的 PICO Body 流")
     probe_parser.add_argument("--seconds", type=positive, default=5, help="探测秒数，默认 5")
     probe_parser.add_argument("--hz", type=positive, default=20, help="读取频率上限，默认 20 Hz")
+    probe_parser.add_argument("--no-start-pc-service", action="store_true", help="不执行 runService.sh；仅在服务已由外部启动时使用")
     comp = sub.add_parser("compare", help="离线比较两批采集，只需要 numpy")
     comp.add_argument("a", type=Path)
     comp.add_argument("b", type=Path)
