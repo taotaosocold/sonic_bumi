@@ -10,7 +10,6 @@ import csv
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import subprocess
 import sys
 import time
 
@@ -23,9 +22,6 @@ JOINTS = (
     "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_hand", "right_hand",
 )
 PARENTS = (-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21)
-PC_SERVICE_SCRIPT = Path("/opt/apps/roboticsservice/runService.sh")
-
-
 def positive(value):
     number = float(value)
     if not np.isfinite(number) or number <= 0:
@@ -87,18 +83,34 @@ def describe_record_timeout(stats):
     return "等待有效新帧超时。请检查 PC Service、Full-body、Send 和网络连接。"
 
 
-def start_pc_service(skip_start):
-    """Match pico_manager_thread_server.py's XRoboToolkit startup sequence."""
-    if skip_start:
-        print("不启动 PC Service：使用已经运行的 XRoboToolkit 服务。", flush=True)
-        return
-    if not PC_SERVICE_SCRIPT.is_file():
+def create_manager_reader(skip_service_start, buffer_size=15):
+    """Use the manager module's own XRT initialization and PicoReader implementation."""
+    script_dir = str(Path(__file__).resolve().parent)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    try:
+        import pico_manager_thread_server as manager
+    except ImportError as exc:
+        raise RuntimeError(f"无法导入 manager 的读取实现：{exc}") from exc
+
+    if manager.xrt is None:
         raise RuntimeError(
-            f"找不到 XRoboToolkit PC Service 启动脚本：{PC_SERVICE_SCRIPT}；"
-            "请用 --no-start-pc-service 并自行启动服务。"
+            "pico_manager_thread_server 未能导入 xrobotoolkit_sdk："
+            f"{manager._XRT_IMPORT_ERROR}"
         )
-    subprocess.Popen(["bash", str(PC_SERVICE_SCRIPT)])
-    print("已按 pico_manager_thread_server.py 的方式启动 XRoboToolkit PC Service。", flush=True)
+    if skip_service_start:
+        print("使用已运行的 PC Service，不重复启动。", flush=True)
+        manager.xrt.init()
+        print("Waiting for body tracking data...", flush=True)
+        while not manager.xrt.is_body_data_available():
+            print("waiting for body data...", flush=True)
+            time.sleep(1)
+        reader = manager.PicoReader(max_queue_size=buffer_size)
+        reader.start()
+    else:
+        # This is the exact path used by run_pico_manager / run_pico.
+        reader = manager._init_input_source("xrt", buffer_size)
+    return manager, reader
 
 
 def record(args):
@@ -106,13 +118,9 @@ def record(args):
         raise ValueError("采集输出文件必须以 .npz 结尾")
     if args.out.exists():
         raise ValueError(f"文件已存在，拒绝覆盖：{args.out}")
-    try:
-        import xrobotoolkit_sdk as xrt
-    except ImportError as exc:
-        raise RuntimeError("请使用 sonic_bumi 已安装 xrobotoolkit_sdk 的 teleop Python 环境") from exc
-
     print(f"记录设置身高：{args.height:g} cm（仅记录标签，不会替你修改 PICO 设置）", flush=True)
     print("请先在 PICO 修改身高、重新校准，在 XRoboToolkit 开启 Full-body 和 Send。", flush=True)
+    manager, reader = create_manager_reader(args.no_start_pc_service)
     frames, stamps, host_times = [], [], []
     previous_stamp = None
     start = None
@@ -126,42 +134,31 @@ def record(args):
     }
     last_report = -1
     interrupted = False
-    start_pc_service(args.no_start_pc_service)
-    xrt.init()
     try:
-        # Initialize the SDK before the countdown, so the PC Service and headset can connect.
+        # Reader and SDK startup are owned by the same implementation as the manager.
         print(f"保持直立、双脚平放、姿态一致；{args.countdown:g} 秒后等待新数据。", flush=True)
         time.sleep(args.countdown)
+        latest = reader.get_latest()
+        if latest is not None:
+            previous_stamp = int(latest["timestamp_ns"])
         last_fresh = time.monotonic()
-        print("Waiting for body tracking data...", flush=True)
-        last_wait_message = 0.0
-        # Match pico_manager_thread_server._init_input_source(): do not read poses
-        # until the SDK has received its first Body message.
-        while not xrt.is_body_data_available():
-            if args.timeout and time.monotonic() - last_fresh > args.timeout:
-                raise RuntimeError(describe_record_timeout(stats))
-            now = time.monotonic()
-            if now - last_wait_message >= 1.0:
-                print("waiting for body data...", flush=True)
-                last_wait_message = now
-            time.sleep(0.01)
-        print("Body data available! Capturing raw PICO [24,7] poses...", flush=True)
+        print("Manager 的 PicoReader 已启动；等待倒计时后的新帧。", flush=True)
         while start is None or time.monotonic() - start < args.seconds:
             now = time.monotonic()
             if args.timeout and now - last_fresh > args.timeout:
                 raise RuntimeError(describe_record_timeout(stats))
-            if not xrt.is_body_data_available():
+            sample = reader.get_latest()
+            if sample is None:
                 time.sleep(0.005)
                 continue
             stats["body_available"] += 1
-            # PicoReader uses this same stream timestamp to detect each new frame.
-            stamp_ns = int(xrt.get_time_stamp_ns())
+            stamp_ns = int(sample["timestamp_ns"])
             if previous_stamp is not None and stamp_ns == previous_stamp:
                 time.sleep(0.000001)
                 continue
             previous_stamp = stamp_ns
             stats["new_timestamp"] += 1
-            pose = np.asarray(xrt.get_body_joints_pose(), dtype=np.float64)
+            pose = np.asarray(sample["body_poses_np"], dtype=np.float64)
             try:
                 if pose.shape != (24, 7):
                     raise ValueError(f"需要 [24,7]，实际为 {pose.shape}")
@@ -176,7 +173,7 @@ def record(args):
             last_fresh = now
             if start is None:
                 start = now
-                print("收到新数据，开始采集；时间戳来源：get_time_stamp_ns()（与 PicoReader 相同）", flush=True)
+                print("收到 manager.PicoReader 的新帧，开始采集原始 body_poses_np。", flush=True)
             frames.append(pose.copy())
             stamps.append(stamp_ns)
             host_times.append(time.time_ns())
@@ -216,22 +213,19 @@ def record(args):
                     )
                 print(f"已保存 {len(frames)} 帧：{args.out.resolve()}")
         finally:
-            # Save before SDK teardown: the vendor SDK may abort during PXREADeinit.
-            xrt.close()
+            try:
+                reader.stop()
+            finally:
+                # Save before SDK teardown: the vendor SDK may abort during PXREADeinit.
+                manager.xrt.close()
     if not frames:
         raise RuntimeError("没有采集到数据")
 
 
 def probe(args):
     """Inspect the raw XRoboToolkit body stream without creating a recording."""
-    try:
-        import xrobotoolkit_sdk as xrt
-    except ImportError as exc:
-        raise RuntimeError("请使用 sonic_bumi 已安装 xrobotoolkit_sdk 的 teleop Python 环境") from exc
-
     print(f"探测 {args.seconds:g} 秒：只读取 XRoboToolkit Body 流，不启动 SONIC 或机器人。", flush=True)
-    start_pc_service(args.no_start_pc_service)
-    xrt.init()
+    manager, reader = create_manager_reader(args.no_start_pc_service)
     total = available = new_messages = valid = invalid = 0
     last_timestamp = None
     last_invalid = "无"
@@ -239,17 +233,17 @@ def probe(args):
         deadline = time.monotonic() + args.seconds
         while time.monotonic() < deadline:
             total += 1
-            body_available = bool(xrt.is_body_data_available())
-            if body_available:
+            sample = reader.get_latest()
+            if sample is not None:
                 available += 1
-                stamp_ns = int(xrt.get_time_stamp_ns())
+                stamp_ns = int(sample["timestamp_ns"])
             else:
                 stamp_ns = None
-            if body_available and (last_timestamp is None or stamp_ns != last_timestamp):
+            if sample is not None and (last_timestamp is None or stamp_ns != last_timestamp):
                 last_timestamp = stamp_ns
                 new_messages += 1
                 try:
-                    pose = np.asarray(xrt.get_body_joints_pose(), dtype=np.float64)
+                    pose = np.asarray(sample["body_poses_np"], dtype=np.float64)
                     if pose.shape != (24, 7):
                         raise ValueError(f"需要 [24,7]，实际为 {pose.shape}")
                     if not np.isfinite(pose).all():
@@ -260,7 +254,10 @@ def probe(args):
                     last_invalid = str(exc)
             time.sleep(1.0 / args.hz)
     finally:
-        xrt.close()
+        try:
+            reader.stop()
+        finally:
+            manager.xrt.close()
 
     print(f"Body 可用轮次：{available}/{total}")
     print(f"时间戳更新：{new_messages}；有效 [24,7] 骨架帧：{valid}；无效帧：{invalid}")
@@ -344,7 +341,7 @@ def main():
     rec.add_argument("--countdown", type=positive, default=3, help="采集前等待秒数，默认 3")
     rec.add_argument(
         "--timeout", type=nonnegative, default=0,
-        help="等待 Body/新帧的超时秒数；默认 0 表示一直等待，与 manager 一致",
+        help="reader 就绪后等待新帧的超时秒数；默认 0 表示一直等待",
     )
     rec.add_argument("--up-axis", choices=("x", "y", "z"), default="y", help="原始 PICO 默认 Y-up")
     rec.add_argument("--no-start-pc-service", action="store_true", help="不执行 runService.sh；仅在服务已由外部启动时使用")
