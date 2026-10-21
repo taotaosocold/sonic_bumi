@@ -22,6 +22,11 @@ JOINTS = (
     "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_hand", "right_hand",
 )
 PARENTS = (-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21)
+TIMESTAMP_GETTERS = {
+    "body_joints": "get_body_joints_timestamp",
+    "body": "get_body_timestamp_ns",
+    "stream": "get_time_stamp_ns",
+}
 
 
 def positive(value):
@@ -65,21 +70,50 @@ def metric_series(poses, up_axis):
     return metrics
 
 
-def timestamp(xrt, source=None):
-    # Some Unity clients omit Body.timeStampNs; prefer per-joint timestamps.
-    sources = [source] if source else ["body_joints", "body", "stream"]
-    for name in sources:
-        getter = getattr(xrt, {
-            "body_joints": "get_body_joints_timestamp",
-            "body": "get_body_timestamp_ns",
-            "stream": "get_time_stamp_ns",
-        }[name], None)
+def timestamp_candidates(xrt):
+    """Return every non-zero SDK timestamp that can identify a new message."""
+    candidates = {}
+    for name, getter_name in TIMESTAMP_GETTERS.items():
+        getter = getattr(xrt, getter_name, None)
         if getter is None:
             continue
-        values = np.asarray(getter(), dtype=np.int64).reshape(-1)
+        try:
+            values = np.asarray(getter(), dtype=np.int64).reshape(-1)
+        except (TypeError, ValueError, RuntimeError):
+            continue
         if np.any(values > 0):
-            return name, tuple(int(v) for v in values)
+            candidates[name] = tuple(int(v) for v in values)
+    return candidates
+
+
+def timestamp(xrt, source=None):
+    # Some Unity clients omit Body.timeStampNs; prefer per-joint timestamps.
+    candidates = timestamp_candidates(xrt)
+    if source and source in candidates:
+        return source, candidates[source]
+    for name in TIMESTAMP_GETTERS:
+        if name in candidates:
+            return name, candidates[name]
     return source, None
+
+
+def describe_record_timeout(stats):
+    if stats["body_available"] == 0:
+        return (
+            "SDK 未报告 Body 数据可用。请确认 XRoboToolkit PC Service 状态为 WORKING，"
+            "头显中已选择 PICO Motion Tracker 的 Full-body，并开启 Send。"
+        )
+    if stats["new_timestamp"] == 0:
+        return (
+            "SDK 报告有 Body 数据，但时间戳没有更新。请关闭再开启 Send，"
+            "重新连接 PC Service，并重新进入 Full-body。"
+        )
+    if stats["invalid"]:
+        return (
+            f"收到 {stats['new_timestamp']} 个新 Body 消息，但 {stats['invalid']} 帧骨架无效"
+            f"（最近原因：{stats['last_invalid']}）。请确认 Full-body 已完成校准。"
+        )
+    return "未收到有效的新骨架帧：请检查 PC Service、Full-body、Send 和网络连接"
 
 
 def record(args):
@@ -97,33 +131,45 @@ def record(args):
     print(f"保持直立、双脚平放、姿态一致；{args.countdown:g} 秒后等待新数据。", flush=True)
     time.sleep(args.countdown)
     frames, stamps, host_times = [], [], []
-    source, previous = None, None
+    source = None
+    previous = {}
     start = None
     last_fresh = time.monotonic()
     skipped = 0
+    stats = {"body_available": 0, "new_timestamp": 0, "invalid": 0, "last_invalid": "无"}
     last_report = -1
     interrupted = False
     xrt.init()
     try:
         # Establish a baseline: cached data from an old session must not start a recording.
-        source, previous = timestamp(xrt)
+        previous = timestamp_candidates(xrt)
         while start is None or time.monotonic() - start < args.seconds:
             now = time.monotonic()
             if now - last_fresh > args.timeout:
-                raise RuntimeError("未收到有效的新骨架帧：请检查 PC Service、Full-body、Send 和网络连接")
+                raise RuntimeError(describe_record_timeout(stats))
             if not xrt.is_body_data_available():
                 time.sleep(0.005)
                 continue
-            current_source, current = timestamp(xrt, source)
-            if current is None or (source == current_source and current == previous):
+            stats["body_available"] += 1
+            candidates = timestamp_candidates(xrt)
+            current_source, current = next(
+                ((name, candidates[name]) for name in TIMESTAMP_GETTERS
+                 if name in candidates and candidates[name] != previous.get(name)),
+                (None, None),
+            )
+            if current is None:
                 time.sleep(0.002)
                 continue
-            source, previous = current_source, current
+            source = current_source
+            previous[current_source] = current
+            stats["new_timestamp"] += 1
             pose = np.asarray(xrt.get_body_joints_pose(), dtype=np.float64)
             try:
                 validate_poses(pose[None])
-            except ValueError:
+            except ValueError as exc:
                 skipped += 1
+                stats["invalid"] += 1
+                stats["last_invalid"] = str(exc)
                 time.sleep(0.005)
                 continue
             last_fresh = now
@@ -168,6 +214,57 @@ def record(args):
             metadata=np.asarray(json.dumps(metadata, ensure_ascii=False)),
         )
     print(f"已保存 {len(frames)} 帧：{args.out.resolve()}")
+
+
+def probe(args):
+    """Inspect the raw XRoboToolkit body stream without creating a recording."""
+    try:
+        import xrobotoolkit_sdk as xrt
+    except ImportError as exc:
+        raise RuntimeError("请使用 sonic_bumi 已安装 xrobotoolkit_sdk 的 teleop Python 环境") from exc
+
+    print(f"探测 {args.seconds:g} 秒：只读取 XRoboToolkit Body 流，不启动 SONIC 或机器人。", flush=True)
+    xrt.init()
+    total = available = new_messages = valid = invalid = 0
+    last_timestamps = timestamp_candidates(xrt)
+    last_invalid = "无"
+    try:
+        deadline = time.monotonic() + args.seconds
+        while time.monotonic() < deadline:
+            total += 1
+            body_available = bool(xrt.is_body_data_available())
+            candidates = timestamp_candidates(xrt)
+            fresh = [name for name in TIMESTAMP_GETTERS
+                     if name in candidates and candidates[name] != last_timestamps.get(name)]
+            if body_available:
+                available += 1
+            if fresh:
+                new_messages += 1
+                for name in fresh:
+                    last_timestamps[name] = candidates[name]
+                try:
+                    pose = np.asarray(xrt.get_body_joints_pose(), dtype=np.float64)
+                    validate_poses(pose[None])
+                    valid += 1
+                except ValueError as exc:
+                    invalid += 1
+                    last_invalid = str(exc)
+            time.sleep(1.0 / args.hz)
+    finally:
+        xrt.close()
+
+    print(f"Body 可用轮次：{available}/{total}")
+    print(f"时间戳更新：{new_messages}；有效 [24,7] 骨架帧：{valid}；无效帧：{invalid}")
+    if invalid:
+        print(f"最近无效原因：{last_invalid}")
+    if available == 0:
+        print("结论：PC Service 没有把 Body 流交给 SDK。检查 WORKING、Full-body 和 Send。")
+    elif new_messages == 0:
+        print("结论：Body 标志存在但数据流停住。关闭再开启 Send，并重连 PC Service 后重试。")
+    elif valid == 0:
+        print("结论：收到 Body 消息但骨架未初始化或不完整。重新进行 Motion Tracker 校准。")
+    else:
+        print("结论：原始 [24,7] Body 流正常，可以执行 record。")
 
 
 def load_record(path):
@@ -238,13 +335,21 @@ def main():
     rec.add_argument("--countdown", type=positive, default=3, help="采集前等待秒数，默认 3")
     rec.add_argument("--timeout", type=positive, default=10, help="等待有效新数据的超时秒数，默认 10")
     rec.add_argument("--up-axis", choices=("x", "y", "z"), default="y", help="原始 PICO 默认 Y-up")
+    probe_parser = sub.add_parser("probe", help="诊断 XRoboToolkit 是否正在提供有效的 PICO Body 流")
+    probe_parser.add_argument("--seconds", type=positive, default=5, help="探测秒数，默认 5")
+    probe_parser.add_argument("--hz", type=positive, default=20, help="读取频率上限，默认 20 Hz")
     comp = sub.add_parser("compare", help="离线比较两批采集，只需要 numpy")
     comp.add_argument("a", type=Path)
     comp.add_argument("b", type=Path)
     comp.add_argument("--out", type=Path, help="可选：保存 CSV 比较表，不覆盖已有文件")
     args = parser.parse_args()
     try:
-        record(args) if args.command == "record" else compare(args)
+        if args.command == "record":
+            record(args)
+        elif args.command == "probe":
+            probe(args)
+        else:
+            compare(args)
     except (ValueError, RuntimeError, OSError, KeyError) as exc:
         parser.exit(1, f"错误：{exc}\n")
 
