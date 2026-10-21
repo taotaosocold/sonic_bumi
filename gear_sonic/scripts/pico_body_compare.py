@@ -144,13 +144,11 @@ def record(args):
 
     print(f"记录设置身高：{args.height:g} cm（仅记录标签，不会替你修改 PICO 设置）", flush=True)
     print("请先在 PICO 修改身高、重新校准，在 XRoboToolkit 开启 Full-body 和 Send。", flush=True)
-    print(f"保持直立、双脚平放、姿态一致；{args.countdown:g} 秒后等待新数据。", flush=True)
-    time.sleep(args.countdown)
     frames, stamps, host_times = [], [], []
     source = None
     previous = {}
     start = None
-    last_fresh = time.monotonic()
+    last_fresh = None
     skipped = 0
     stats = {"body_available": 0, "new_timestamp": 0, "invalid": 0, "last_invalid": "无"}
     last_report = -1
@@ -158,6 +156,10 @@ def record(args):
     start_pc_service(args.no_start_pc_service)
     xrt.init()
     try:
+        # Initialize the SDK before the countdown, so the PC Service and headset can connect.
+        print(f"保持直立、双脚平放、姿态一致；{args.countdown:g} 秒后等待新数据。", flush=True)
+        time.sleep(args.countdown)
+        last_fresh = time.monotonic()
         # Establish a baseline: cached data from an old session must not start a recording.
         previous = timestamp_candidates(xrt)
         while start is None or time.monotonic() - start < args.seconds:
@@ -351,7 +353,7 @@ def main():
     rec.add_argument("--seconds", type=positive, default=10, help="采集秒数，默认 10")
     rec.add_argument("--hz", type=positive, default=50, help="读取频率上限，默认 50 Hz")
     rec.add_argument("--countdown", type=positive, default=3, help="采集前等待秒数，默认 3")
-    rec.add_argument("--timeout", type=positive, default=10, help="等待有效新数据的超时秒数，默认 10")
+    rec.add_argument("--timeout", type=positive, default=60, help="等待有效新数据的超时秒数，默认 60")
     rec.add_argument("--up-axis", choices=("x", "y", "z"), default="y", help="原始 PICO 默认 Y-up")
     rec.add_argument("--no-start-pc-service", action="store_true", help="不执行 runService.sh；仅在服务已由外部启动时使用")
     probe_parser = sub.add_parser("probe", help="诊断 XRoboToolkit 是否正在提供有效的 PICO Body 流")
