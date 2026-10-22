@@ -22,6 +22,9 @@ def load_deploy_config(path: str | Path) -> dict:
     result = yaml.safe_load(repo_path(path).read_text(encoding="utf-8"))
     if not isinstance(result, dict) or result.get("version") != 1:
         raise ValueError("BUMI3 deployment config requires version: 1")
+    # 输入布局与物理控制契约分开；旧配置不含此项时仍使用完整 SMPL。
+    if result.get("smpl_input", "full") not in ("full", "five_point"):
+        raise ValueError("smpl_input must be full or five_point")
     for section in ("ros2", "teleop", "hardware", "policies"):
         if not isinstance(result.get(section), dict):
             raise ValueError(f"deployment config requires {section}")

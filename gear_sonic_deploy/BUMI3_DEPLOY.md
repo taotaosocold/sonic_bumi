@@ -2,6 +2,8 @@
 
 支持离线 sim2sim、离线 sim2real 和 PICO 实时 SMPL 遥操作。以下命令均在 **`sonic_bumi` 仓库根目录**执行；配置和资产路径均相对于仓库根目录。
 
+第 1～7 节对应原来的完整 SMPL 模型；新增的 **Robot＋SMPL 五点双 encoder** 使用同一套环境，模型、数据和启动方式见[第 8 节](#8-robot-与-smpl-五点模型部署)。
+
 ## 1. 环境搭建
 
 ### 基础环境
@@ -232,3 +234,116 @@ BUMI3 源码位于 `gear_sonic_deploy/src/bumi3/bumi3_deploy_onnx_ref/`，以下
 | `include/math_utils.hpp` | 朝向和四元数数学工具 |
 
 主控制路径保持：反馈历史 → 输入快照 → 朝向 → 观测 → 策略动作 → 参考游标 → 命令下发。BUMI3 的联合 ONNX 输入、21 关节映射及 Noetix ROS 2 后端仍按本机器人实现；`ros2_backend.hpp` 负责具名执行器消息转换，`deploy_config.hpp` 负责启动参数和配置装配。
+
+## 8. Robot 与 SMPL 五点模型部署
+
+### 模型与配置
+
+新训练配置为 `exp/manager/universal_token/all_modes/sonic_bumi3_smpl_five_point.yaml`。部署使用独立的 `gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_five_point.yaml`，其中 `smpl_input: five_point` 选择新布局。
+
+| 内容 | 完整 SMPL | 新五点 SMPL |
+| --- | --- | --- |
+| 人体参考 | 24 点位置＋根朝向 | 头、双腕、双踝的位置和朝向＋根朝向 |
+| 十帧参考维度 | 780 | 510＝450 五点姿态＋60 根朝向 |
+| 加上 690 维反馈历史后的联合 ONNX 输入 | 1470 | **1200** |
+| PICO 发布参数 | `--smpl-only` | `--smpl-five-point` |
+
+两种方案的 Robot 分支均为 **1170 维输入、21 维动作输出**；新五点分支也是 21 维动作输出。五点顺序固定为头、左腕、右腕、左踝、右踝（骨架索引 `15,20,21,7,8`）。每帧先放 15 维局部位置，再放 30 维局部旋转；根朝向单独拼接。启动时根据机器人 IMU 做 yaw 对齐。
+
+**需要先完成新配置训练并导出模型。**旧完整 SMPL 的 1470 维 ONNX 不能用于五点模式。请使用同一个新检查点导出的 Robot、SMPL 两个联合 ONNX；不使用独立的 `*_encoder.onnx`。
+
+在训练环境中导出，保留训练目录中的 `config.yaml`（修改下面的运行目录和步数）：
+
+```bash
+BUMI_RUN=runs/your_five_point_run
+BUMI_STEP=030000
+python gear_sonic/eval_agent_trl.py \
+  checkpoint="$BUMI_RUN/model_step_${BUMI_STEP}.pt" \
+  ++num_envs=1 ++headless=true ++export_onnx_only=true
+
+mkdir -p gear_sonic_deploy/policy/bumi3/five_point/{robot,smpl}
+cp "$BUMI_RUN/exported/model_step_${BUMI_STEP}_g1.onnx" \
+  gear_sonic_deploy/policy/bumi3/five_point/robot/model.onnx
+cp "$BUMI_RUN/exported/model_step_${BUMI_STEP}_smpl.onnx" \
+  gear_sonic_deploy/policy/bumi3/five_point/smpl/model.onnx
+```
+
+导出机器上原训练数据路径仍须有效；数据迁移后，按原训练配置覆盖 `manager_env.commands.motion.motion_lib_cfg.motion_file` 和 `smpl_motion_file`。导出完成后，把上述 `five_point/` 模型目录复制到部署电脑的相同仓库相对位置。
+
+### 离线 CSV
+
+加载第 1 节的仿真环境，使用**原始配对 Robot／SMPL PKL**重新转换：
+
+```bash
+python gear_sonic_deploy/reference/bumi3_convert_motion.py \
+  --config gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_five_point.yaml
+```
+
+默认读取 `pkl/dataset_smoke_24.json`；替换动作集时加 `--dataset <原始配对清单.json>`。输出位于 `reference/bumi3_example/converted_five_point/`（相对于 `gear_sonic_deploy/`），保留原 `converted/`。五点 SMPL 保存 `smpl_five_point_pose.csv`、`smpl_root_quat.csv` 和带布局版本的元数据；旧的 24 点位置 CSV 不含关节朝向，不能直接充当五点数据。
+
+### 离线 sim2sim／sim2real
+
+**sim2sim 终端一：**加载仿真环境后启动 MuJoCo：
+
+```bash
+python gear_sonic/scripts/run_sim_loop.py --robot-type bumi3 \
+  --config gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_five_point.yaml
+```
+
+**sim2sim 终端二：**加载控制端环境与 GPU 库后启动五点策略：
+
+```bash
+bash gear_sonic_deploy/deploy.sh --robot-type bumi3 sim \
+  --config gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_five_point.yaml \
+  --encoder smpl
+```
+
+按 `T` 播放。使用新训练任务的 Robot 分支时，把 `--encoder smpl` 改为 `--encoder robot`。指定动作仍加 `--motion-name '<动作名>'`，`P` 切换下一个动作。
+
+**离线 sim2real：**不启动 MuJoCo，在已加载环境的控制终端执行（网卡换为实际值）：
+
+```bash
+BUMI_BRIDGE_SUDO=1 bash gear_sonic_deploy/deploy.sh --robot-type bumi3 real \
+  --interface enp132s0 \
+  --config gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_five_point.yaml \
+  --encoder smpl
+```
+
+先 `]` 平滑进入参考首帧关节姿态并持续保持，再 `T` 启动策略，`O` 退出。准备姿态、关节映射和 ROS 2 通路与第 4 节一致。
+
+### PICO 五点遥操作
+
+**终端一：**仿真使用本节的 MuJoCo 命令；真机不启动 MuJoCo。
+
+**终端二：**使用第 5 节安装的遥操作环境：
+
+```bash
+source .venv_teleop/bin/activate
+python gear_sonic/scripts/pico_manager_thread_server.py \
+  --smpl-five-point --num_frames_to_send 10
+```
+
+直接选取身体骨架 `[24,7]` 的五点和骨盆，不使用独立头显／手柄设备原点，不加载 SMPL 身体模型或 G1 三点标定。看到 `BUMI3_FIVE_POINT_STREAM_READY` 表示已积累窗口并发送。
+
+**终端三：**加载控制端环境与 GPU 库，PICO sim2sim：
+
+```bash
+bash gear_sonic_deploy/deploy.sh --robot-type bumi3 sim \
+  --config gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_five_point.yaml \
+  --input-type zmq
+```
+
+PICO sim2real 改为：
+
+```bash
+BUMI_BRIDGE_SUDO=1 bash gear_sonic_deploy/deploy.sh --robot-type bumi3 real \
+  --interface enp132s0 \
+  --config gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_five_point.yaml \
+  --input-type zmq
+```
+
+实时控制自动选择新 SMPL 模型，无需离线 CSV。仿真按 `T` 跟随；真机先 `]` 进入训练默认关节姿态并保持，再 `T` 跟随。跨电脑传输时加 `--zmq-host <PICO发送端IP>`。
+
+正常五点策略日志应显示 `encoder=smpl reference=510 history=690 total=1200`。离线窗口读取当前及后续十帧；实时窗口采用最近十帧、每帧间隔 0.02 秒，跨度 0.18 秒，因此相对窗口首帧存在相应延迟。断流或无效追踪会停止更新窗口，接收端沿用现有超时停控机制。模型维度、CSV 布局或消息版本不匹配时会报错。
+
+此模式已接入部署代码，仍需使用实际训练出的新模型完成仿真及硬件调试；旧完整 SMPL 模型的运行结果不能替代新五点模式的验证。

@@ -1,0 +1,31 @@
+# 独立的 Robot 与 SMPL 五点观测组合；根部相对朝向继续复用现有观测实现。
+# 五点姿态 [10,45] 加根部姿态 [10,6]，第二路总计五百一十维参考输入。
+defaults:
+  - ../terms/encoder_index@_here_
+  - ../terms/command_multi_future_nonflat@_here_
+  - ../terms/motion_anchor_ori_b_mf_nonflat@_here_
+  - ../terms/smpl_five_point_pose_multi_future_local_nonflat@_here_
+  - ../terms/smpl_root_ori_b_multi_future@_here_
+
+_target_: gear_sonic.envs.manager_env.mdp.observations.TokenizerCfg
+enable_corruption: true
+concatenate_terms: false
+
+# 沿用基础 BUMI3 观测的均匀扰动幅度；不会改变旧配置的噪声或观测注册。
+motion_anchor_ori_b_mf_nonflat:
+  noise:
+    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    n_min: -0.05
+    n_max: 0.05
+
+smpl_five_point_pose_multi_future_local_nonflat:
+  noise:
+    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    n_min: -0.05
+    n_max: 0.05
+
+smpl_root_ori_b_multi_future:
+  noise:
+    _target_: isaaclab.utils.noise.AdditiveUniformNoiseCfg
+    n_min: -0.05
+    n_max: 0.05

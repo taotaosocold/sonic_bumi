@@ -1,0 +1,8 @@
+# 五点顺序为头部、左腕、右腕、左踝、右踝；每帧十五维位置加三十维旋转。
+# 每个未来帧都相对该帧的人体骨盆表达，不从机器人重定向骨架提取点位。
+smpl_five_point_pose_multi_future_local_nonflat:
+  _target_: isaaclab.managers.ObservationTermCfg
+  func: gear_sonic.envs.manager_env.mdp:smpl_five_point_pose_multi_future_local
+  params:
+    command_name: "motion"
+    non_flatten: true

@@ -31,10 +31,12 @@ def load_smpl_reference_motion(
     path: str | Path, contract: Bumi3Contract, *, motion_key: str | None = None,
     robot_path: str | Path | None = None, robot_motion_key: str | None = None,
     joint_order: JointOrder = "auto", quaternion_order: QuaternionOrder = "auto",
+    five_point: bool = False,
 ) -> ReferenceMotion:
     """连接人体参考和可选机器人初始化；仅 SMPL 时用机器人默认站姿及人体参考 yaw。"""
 
-    smpl = load_smpl_reference(path, motion_key=motion_key, target_fps=contract.target_fps)
+    smpl = load_smpl_reference(path, motion_key=motion_key, target_fps=contract.target_fps,
+                               five_point=five_point)
     if robot_path is not None:
         robot = load_reference_motion(
             robot_path, contract, motion_key=robot_motion_key,

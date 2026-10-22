@@ -393,6 +393,8 @@ class TokenizerCfg(ObsGroup):
     vr_3point_local_target_compliant = None
     smpl_joints_multi_future_nonflat = None
     smpl_joints_multi_future_local_nonflat = None
+    # 新的五点训练入口单独注册此项；旧完整人体输入仍由原有配置选择。
+    smpl_five_point_pose_multi_future_local_nonflat = None
     smpl_joints_multi_future_local_flatten = None
     smpl_lower_body_joints_multi_future_local_nonflat = None
     smpl_lower_body_joints_multi_future_local_flatten = None
@@ -1743,6 +1745,20 @@ def smpl_joints_multi_future_local(
         return ref_joints_root.reshape(env.num_envs, command.smpl_num_future_frames, -1)
     else:
         return ref_joints_root.view(env.num_envs, -1)
+
+
+def smpl_five_point_pose_multi_future_local(
+    env: ManagerBasedEnv, command_name: str, non_flatten: bool = False
+) -> torch.Tensor:
+    from gear_sonic.utils.teleop.smpl_five_point import smpl_five_point_local_pose
+
+    command: commands.TrackingCommand = env.command_manager.get_term(command_name)
+    poses = smpl_five_point_local_pose(
+        command.smpl_joints_multi_future,
+        command.smpl_pose_multi_future,
+        command.smpl_root_quat_w_multi_future,
+    )
+    return poses if non_flatten else poses.reshape(env.num_envs, -1)
 
 
 def smpl_joints_lower_multi_future_local(

@@ -9,11 +9,12 @@
 #include <set>
 
 namespace bumi3 {
-// 与 G1 共用 PICO 的打包消息协议；BUMI3 只使用已训练的完整 SMPL 输入。
+// 与 G1 共用 PICO 打包协议；人体参考按配置选择完整关键点或局部五点姿态。
 class ZMQEndpointInterface {
  public:
-  explicit ZMQEndpointInterface(const Json& config)
-      : socket_(context_, zmq::socket_type::sub), topic_(config.at("topic")), timeout_(config.at("stream_timeout")) {
+  explicit ZMQEndpointInterface(const Json& config, bool five_point = false)
+      : socket_(context_, zmq::socket_type::sub), topic_(config.at("topic")),
+        timeout_(config.at("stream_timeout")), five_point_(five_point) {
     socket_.set(zmq::sockopt::linger, 0);
     socket_.set(zmq::sockopt::conflate, 1);
     socket_.set(zmq::sockopt::subscribe, topic_);
@@ -29,7 +30,8 @@ class ZMQEndpointInterface {
       Poll(20);
       if (valid_) return window_;
     }
-    throw std::runtime_error("No complete SMPL window; start PICO with --smpl-only --num_frames_to_send 10");
+    throw std::runtime_error(std::string("No complete SMPL window; start PICO with ") +
+                             (five_point_ ? "--smpl-five-point" : "--smpl-only") + " --num_frames_to_send 10");
   }
 
   PoseWindow GetLatestPose() {
@@ -70,7 +72,7 @@ class ZMQEndpointInterface {
     std::size_t offset = payload;
     Json shapes;
     std::set<std::string> names;
-    std::vector<double> joints, roots, indices;
+    std::vector<double> joints, roots, indices, five_point_pose, schema;
     for (const auto& field : header.at("fields")) {
       const auto dtype = field.at("dtype").get<std::string>();
       const auto name = field.at("name").get<std::string>();
@@ -84,7 +86,9 @@ class ZMQEndpointInterface {
       const int width = (dtype == "f64" || dtype == "i64") ? 8 :
                         (dtype == "f32" || dtype == "i32") ? 4 : dtype == "bool" ? 1 : 0;
       if (!width || offset + count * width > size) throw std::runtime_error("Invalid pose payload");
-      auto* output = name == "smpl_joints" ? &joints : name == "body_quat_w" ? &roots : name == "frame_index" ? &indices : nullptr;
+      auto* output = name == "smpl_joints" ? &joints : name == "body_quat_w" ? &roots :
+                     name == "frame_index" ? &indices : name == "smpl_five_point_pose" ? &five_point_pose :
+                     name == "smpl_five_point_schema" ? &schema : nullptr;
       if (output) {
         shapes[name] = field.at("shape");
         output->resize(count);
@@ -103,9 +107,17 @@ class ZMQEndpointInterface {
       offset += count * width;
     }
     const auto frames = indices.size();
-    if (offset != size || frames < 10 || shapes["smpl_joints"] != Json::array({frames, 24, 3}) ||
+    if (offset != size || frames < 10 ||
         shapes["body_quat_w"] != Json::array({frames, 4}) || shapes["frame_index"] != Json::array({frames}))
-      throw std::runtime_error("Pose requires ten joints/orientation/index samples");
+      throw std::runtime_error("Pose requires ten orientation/index samples");
+    // 两种布局必须显式匹配；带版本号的五点消息不能被旧模型当作完整关键点解析。
+    if (five_point_) {
+      if (shapes["smpl_five_point_pose"] != Json::array({frames, 45}) ||
+          shapes["smpl_five_point_schema"] != Json::array({1}) || schema.size() != 1 || schema[0] != 1 ||
+          !joints.empty()) throw std::runtime_error("Expected schema 1 five-point pose [N,45]; start PICO with --smpl-five-point");
+    } else if (shapes["smpl_joints"] != Json::array({frames, 24, 3}) || !five_point_pose.empty()) {
+      throw std::runtime_error("Expected full SMPL joints [N,24,3]; start PICO with --smpl-only");
+    }
     // 帧序号必须是可精确表示的非负整数；最后十帧必须连续，不能把缺帧窗口直接送给策略。
     for (std::size_t i = frames - 10; i < frames; ++i)
       if (indices[i] < 0 || indices[i] >= 9007199254740992. || indices[i] != std::floor(indices[i]))
@@ -116,7 +128,8 @@ class ZMQEndpointInterface {
     if (indices.back() <= window_.last) return;
     PoseWindow next;
     next.last = int64_t(indices.back());
-    std::copy(joints.begin() + (frames - 10) * 72, joints.end(), next.joints.begin());
+    if (five_point_) std::copy(five_point_pose.begin() + (frames - 10) * 45, five_point_pose.end(), next.five_point_pose.begin());
+    else std::copy(joints.begin() + (frames - 10) * 72, joints.end(), next.joints.begin());
     for (int i = 0; i < 10; ++i) next.roots[i] = QuaternionFromWxyz(roots.data() + (frames - 10 + i) * 4);
     window_ = next;
     valid_ = true;
@@ -127,6 +140,7 @@ class ZMQEndpointInterface {
   zmq::socket_t socket_;
   std::string topic_;
   double timeout_;
+  bool five_point_ = false;
   PoseWindow window_;
   bool valid_ = false;
   Time::time_point received_{};

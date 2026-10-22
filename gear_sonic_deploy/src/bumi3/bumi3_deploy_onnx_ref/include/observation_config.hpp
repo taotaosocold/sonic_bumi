@@ -36,11 +36,13 @@ class ObservationConfigParser {
             {"his_gravity_dir_10frame_step1"}};
   }
 
-  static EncoderConfig GetDefaultEncoderConfig() {
+  static EncoderConfig GetDefaultEncoderConfig(bool five_point = false) {
     EncoderConfig result;
     const std::vector<std::string> robot{"motion_joint_positions_10frame_step5",
         "motion_joint_velocities_10frame_step5", "motion_anchor_orientation_10frame_step5"};
-    const std::vector<std::string> smpl{"smpl_joints_10frame_step1", "smpl_anchor_orientation_10frame_step1"};
+    const std::vector<std::string> smpl{
+        five_point ? "smpl_five_point_pose_10frame_step1" : "smpl_joints_10frame_step1",
+        "smpl_anchor_orientation_10frame_step1"};
     for (const auto& name : robot) result.encoder_observations.push_back({name, true});
     for (const auto& name : smpl) result.encoder_observations.push_back({name, true});
     result.encoder_modes = {{"robot", 0, robot}, {"smpl", 1, smpl}};
@@ -50,7 +52,8 @@ class ObservationConfigParser {
   // 输入是 YAML 已解析并随启动配置传递的观测段，避免运行循环再读文件或访问 JSON 键。
   // 缺省项沿用原 BUMI3 默认值，已提供但错误的结构仍报错，不能静默改变训练输入。
   static FullObservationConfig ParseFullConfig(const Json& runtime) {
-    FullObservationConfig result{GetDefaultConfig(), GetDefaultEncoderConfig()};
+    const bool five_point = runtime.value("smpl_input", std::string("full")) == "five_point";
+    FullObservationConfig result{GetDefaultConfig(), GetDefaultEncoderConfig(five_point)};
     if (runtime.contains("observations")) result.observations = ParseObservations(runtime.at("observations"));
     if (runtime.contains("encoder_config")) {
       const auto& encoder = runtime.at("encoder_config");
@@ -61,6 +64,16 @@ class ObservationConfigParser {
       for (const auto& mode : encoder.at("encoder_modes"))
         result.encoder.encoder_modes.push_back({mode.at("name").get<std::string>(), mode.at("mode_id").get<int>(),
             mode.at("required_observations").get<std::vector<std::string>>()});
+    }
+    // 新布局复用同一份物理与历史契约，只把标准完整人体采集项映射为五点项。
+    // 主类仍逐项校验模式、顺序与维度，其他自定义字段不会被静默替换。
+    if (five_point) {
+      for (auto& observation : result.encoder.encoder_observations)
+        if (observation.name == "smpl_joints_10frame_step1") observation.name = "smpl_five_point_pose_10frame_step1";
+      for (auto& mode : result.encoder.encoder_modes)
+        if (mode.name == "smpl")
+          for (auto& name : mode.required_observations)
+            if (name == "smpl_joints_10frame_step1") name = "smpl_five_point_pose_10frame_step1";
     }
     return result;
   }

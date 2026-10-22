@@ -1,0 +1,28 @@
+# @package _global_
+# 独立的 BUMI3 双编码器训练入口：Robot 完整参考与 SMPL 五点完整姿态。
+# 五点来自 SMPL 头部、双腕、双踝，包含骨盆局部位置和骨盆局部完整朝向；
+# 人体根部世界朝向经现有观测转为相对机器人根部朝向，使用十帧、间隔零点零二秒。
+# 内部继续使用 g1、smpl 两个编码器键，以复用配对采样、重建和 latent 对齐损失。
+# 原完整 SMPL 模型的第一层输入宽度不同，不能把旧 checkpoint 当作本方案直接续训。
+defaults:
+  - /exp/manager/universal_token/all_modes/sonic_bumi3
+  - override /manager_env/observations/tokenizer: unitoken_robot_smpl_five_point_noz
+  - _self_
+
+exp_var: smpl_five_point
+
+manager_env:
+  commands:
+    motion:
+      smpl_num_future_frames: 10
+      smpl_dt_future_ref_frames: 0.02
+
+algo:
+  config:
+    actor:
+      backbone:
+        encoders:
+          smpl:
+            inputs:
+              - smpl_five_point_pose_multi_future_local_nonflat
+              - smpl_root_ori_b_multi_future

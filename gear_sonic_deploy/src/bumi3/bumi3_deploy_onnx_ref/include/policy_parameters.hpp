@@ -10,6 +10,7 @@ inline constexpr int HISTORY_LENGTH = 10;
 inline constexpr int TOKEN_DIM = 64;
 inline constexpr int ROBOT_REFERENCE_DIM = 480;
 inline constexpr int SMPL_REFERENCE_DIM = 780;
+inline constexpr int SMPL_FIVE_POINT_REFERENCE_DIM = 510;
 inline constexpr int PROPRIOCEPTION_DIM = 690;
 
 struct PolicyParameters {

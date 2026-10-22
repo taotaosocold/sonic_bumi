@@ -10,6 +10,10 @@ smpl_joints[T,24,3]。pose_aa 的根旋转仍为 Y-up，关键点已经由离线
 人体编码器读取当前起连续十帧：先展开 720 维局部关键点，再展开 60 维相对机器人
 完整根朝向的六维旋转表示。等待播放时十帧全部固定为当前帧，末尾截断或循环由调用方
 提供的索引决定。该模块不从人体姿态推算机器人关节，不改源数据、不参与动力学。
+
+可选的五点导出保留完整人体加载行为，并额外计算每帧四十五维五点姿态。
+五点位置明确减去骨盆，朝向从原始轴角累乘得到，与新的五点训练观测一致；
+旧的完整人体输入仍不减去骨盆，其历史检查点的七百八十维参考布局保持不变。
 """
 
 from dataclasses import dataclass
@@ -33,6 +37,8 @@ class SmplReference:
     root_quat_wxyz: np.ndarray
     fps: float
     name: str
+    # 仅五点导出时计算；旧完整 SMPL 加载保持原有字段和行为。
+    five_point_pose: np.ndarray | None = None
 
     @property
     def num_frames(self) -> int:
@@ -41,6 +47,7 @@ class SmplReference:
 
 def load_smpl_reference(
     path: str | Path, *, motion_key: str | None = None, target_fps: float = 50.0,
+    five_point: bool = False,
 ) -> SmplReference:
     """读取直接字典或具名动作容器；缺字段、非有限值、错误帧率或形状均显式拒绝。"""
 
@@ -89,10 +96,16 @@ def load_smpl_reference(
         * Rotation.from_quat([0.5, 0.5, 0.5, 0.5]).inv()
     )
     local_joints = np.einsum("tji,tkj->tki", root.as_matrix(), joints)
+    five_point_pose = None
+    if five_point:
+        from gear_sonic.utils.teleop.smpl_five_point import smpl_pose_to_five_point_features
+
+        five_point_pose = smpl_pose_to_five_point_features(pose, local_joints)
     return SmplReference(
         local_joints=local_joints.astype(np.float32),
         root_quat_wxyz=root.as_quat()[:, [3, 0, 1, 2]],
         fps=fps, name=name,
+        five_point_pose=five_point_pose,
     )
 
 

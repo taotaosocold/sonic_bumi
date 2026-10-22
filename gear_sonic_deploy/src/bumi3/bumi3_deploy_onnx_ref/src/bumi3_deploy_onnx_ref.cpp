@@ -32,6 +32,10 @@ class Bumi3Deploy {
     has_offline_ = !config_.at("motions").empty();
     has_live_ = config_.at("input_type") == "zmq";
     offline_smpl_ = config_.at("encoder") == "smpl";
+    const auto smpl_input = config_.value("smpl_input", std::string("full"));
+    if (smpl_input != "full" && smpl_input != "five_point") throw std::runtime_error("Unknown SMPL input layout");
+    five_point_ = smpl_input == "five_point";
+    smpl_reference_dim_ = five_point_ ? SMPL_FIVE_POINT_REFERENCE_DIM : SMPL_REFERENCE_DIM;
     live_ = !has_offline_;
     current_encoder_mode_ = live_ || offline_smpl_ ? 1 : 0;
     control_dt_ = policy_parameters_.control_dt;
@@ -39,7 +43,7 @@ class Bumi3Deploy {
     // 与 G1 一样先预加载动作，再初始化模型与观测函数；控制循环和切换动作不读取 CSV。
     if (has_offline_) {
       if (!motion_reader_.ReadFromCSV(config_.at("motions"), offline_smpl_,
-                                      config_.at("reference_contract_id"), policy_parameters_.policy_joint_names))
+                                      config_.at("reference_contract_id"), policy_parameters_.policy_joint_names, five_point_))
         throw std::runtime_error("No reference motions loaded");
       current_motion_ = motion_reader_.GetMotionShared(motion_reader_.current_motion_index_);
     }
@@ -47,12 +51,12 @@ class Bumi3Deploy {
     if (has_offline_) {
       offline_policy_ = std::make_unique<PolicyEngine>();
       if (!offline_policy_->Initialize(config_.at("policy"),
-          (offline_smpl_ ? SMPL_REFERENCE_DIM : ROBOT_REFERENCE_DIM) + PROPRIOCEPTION_DIM, inference))
+          (offline_smpl_ ? smpl_reference_dim_ : ROBOT_REFERENCE_DIM) + PROPRIOCEPTION_DIM, inference))
         throw std::runtime_error("Failed to initialize offline BUMI3 policy");
     }
     if (has_live_) {
       live_policy_ = std::make_unique<PolicyEngine>();
-      if (!live_policy_->Initialize(config_.at("smpl_policy"), SMPL_REFERENCE_DIM + PROPRIOCEPTION_DIM, inference))
+      if (!live_policy_->Initialize(config_.at("smpl_policy"), smpl_reference_dim_ + PROPRIOCEPTION_DIM, inference))
         throw std::runtime_error("Failed to initialize live BUMI3 policy");
     }
     state_logger_ = std::make_unique<StateLogger>(policy_parameters_);
@@ -68,7 +72,7 @@ class Bumi3Deploy {
     // 初始化只确认反馈有效，不把电机去使能作为启动前置条件。
     // 真机仍等待操作员按 ]，再由 InitControl 请求使能并平滑进入参考起始姿态。
     input_interface_ = std::make_unique<SimpleKeyboard>();
-    if (has_live_) zmq_interface_ = std::make_unique<ZMQEndpointInterface>(config_.at("teleop"));
+    if (has_live_) zmq_interface_ = std::make_unique<ZMQEndpointInterface>(config_.at("teleop"), five_point_);
     operator_state.play = config_.at("autoplay");
     reset_with_reference_velocity_ = operator_state.play;
     if (live_) {
@@ -293,6 +297,21 @@ class Bumi3Deploy {
     return true;
   }
 
+  // CSV 和实时消息都已按训练布局保存局部五点姿态；这里只采集十帧，不重复变换坐标。
+  // 根朝向仍由 GatherMotionAnchorOrientationMutiFrame 对齐后独立拼接在五点特征之后。
+  bool GatherMotionSmplFivePointPoseMultiFrame(std::vector<double>& target_buffer, std::size_t offset,
+                                               int num_frames = 10, int step_size = 1) {
+    if (!five_point_ || current_encoder_mode_ != 1 ||
+        !CheckObservationWindow(target_buffer.size(), offset, num_frames, step_size, 45)) return false;
+    for (int i = 0; i < num_frames; ++i) {
+      const int frame = GetFutureFrame(i, step_size);
+      const double* pose = live_ ? live_pose_snapshot_.five_point_pose.data() + frame * 45
+                                : current_motion_->SmplFivePointPose(frame);
+      std::copy_n(pose, 45, target_buffer.begin() + offset + i * 45);
+    }
+    return true;
+  }
+
   template <std::size_t Dimension>
   bool GatherHistory(std::vector<double>& target_buffer, std::size_t offset, int num_frames, int step_size,
                      bool newest_first, std::array<double, Dimension> StateLogger::Entry::* field) {
@@ -333,6 +352,7 @@ class Bumi3Deploy {
             {"motion_joint_velocities_10frame_step5", 210, [this](auto& b, auto o) { return GatherMotionJointVelocitiesMultiFrame(b, o, 10, 5); }},
             {"motion_anchor_orientation_10frame_step5", 60, [this](auto& b, auto o) { return GatherMotionAnchorOrientationMutiFrame(b, o, 10, 5); }},
             {"smpl_joints_10frame_step1", 720, [this](auto& b, auto o) { return GatherMotionSmplJointsMultiFrame(b, o, 10, 1); }},
+            {"smpl_five_point_pose_10frame_step1", 450, [this](auto& b, auto o) { return GatherMotionSmplFivePointPoseMultiFrame(b, o, 10, 1); }},
             {"smpl_anchor_orientation_10frame_step1", 60, [this](auto& b, auto o) { return GatherMotionAnchorOrientationMutiFrame(b, o, 10, 1); }},
             {"his_base_angular_velocity_10frame_step1", 30, [this](auto& b, auto o) { return GatherHisBaseAngularVelocity(b, o); }},
             {"his_body_joint_positions_10frame_step1", 210, [this](auto& b, auto o) { return GatherHisBodyJointPositions(b, o); }},
@@ -351,7 +371,7 @@ class Bumi3Deploy {
       active.push_back(ActiveObservation{name, found->function, offset, found->dimension});
       return found->dimension;
     };
-    const auto defaults = ObservationConfigParser::GetDefaultEncoderConfig();
+    const auto defaults = ObservationConfigParser::GetDefaultEncoderConfig(five_point_);
     const auto& expected_mode = defaults.encoder_modes.at(current_encoder_mode_);
     std::optional<EncoderModeConfig> mode_config;
     for (const auto& mode : encoder_config_.encoder_modes) {
@@ -380,7 +400,7 @@ class Bumi3Deploy {
       active_names.push_back(name);
       policy_offset += append(name, policy_offset, active_obs_functions_);
     }
-    if (active_names != expected_names || encoder_offset != std::size_t(current_encoder_mode_ == 1 ? SMPL_REFERENCE_DIM : ROBOT_REFERENCE_DIM) ||
+    if (active_names != expected_names || encoder_offset != std::size_t(current_encoder_mode_ == 1 ? smpl_reference_dim_ : ROBOT_REFERENCE_DIM) ||
         policy_offset - encoder_offset != PROPRIOCEPTION_DIM) throw std::runtime_error("Observation layout differs from trained BUMI3 model");
     encoder_obs_buffer_.assign(encoder_offset, 0);
     obs_buffer_.assign(policy_offset, 0);
@@ -679,6 +699,8 @@ class Bumi3Deploy {
   EncoderConfig encoder_config_;
   ProgramState program_state_ = ProgramState::INIT;
   bool real_ = false, has_offline_ = false, has_live_ = false, offline_smpl_ = false;
+  bool five_point_ = false;
+  int smpl_reference_dim_ = SMPL_REFERENCE_DIM;
   bool live_ = false, enabled_ = false, entry_started_ = false, reset_with_reference_velocity_ = false;
   bool reinitialize_heading_ = true;
   double control_dt_ = 0.02;

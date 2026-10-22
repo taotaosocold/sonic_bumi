@@ -23,8 +23,9 @@ namespace bumi3 {
 
 /**
  * 单条动作的数据容器，不执行文件读取或动作切换。关节按策略的 21 个关节顺序
- * 保存；身体四元数为 base_link 的 wxyz 方向。SMPL 保存每帧 24 个局部三维点
- * 及独立的根四元数。MuJoCo qpos/qvel 供仿真初始化与影子使用，不代表真机反馈。
+ * 保存；身体四元数为 base_link 的 wxyz 方向。人体参考按所选布局保存每帧
+ * 二十四点位置或四十五维五点姿态，以及独立的根四元数。MuJoCo qpos/qvel
+ * 供仿真初始化与影子使用，不代表真机反馈。
  */
 struct MotionSequence {
     using Point = std::array<double, 3>;
@@ -52,6 +53,11 @@ struct MotionSequence {
         if (smpl_root_quaternions_.empty()) throw std::runtime_error("motion has no SMPL root orientation: " + name);
         return smpl_root_quaternions_.data() + FrameOffset(frame, 1);
     }
+    // 五点位置和旋转已经由原始轴角离线固化；运行时只读取四十五维视图。
+    const double* SmplFivePointPose(int frame) const {
+        if (smpl_five_point_pose_.empty()) throw std::runtime_error("motion has no SMPL five-point pose: " + name);
+        return smpl_five_point_pose_.data() + FrameOffset(frame, 45);
+    }
     const double* MujocoPositions(int frame) const {
         return mujoco_positions_.data() + FrameOffset(frame, 28);
     }
@@ -61,7 +67,7 @@ struct MotionSequence {
 
     int GetNumJoints() const { return 21; }
     int GetNumBodyQuaternions() const { return 1; }
-    int GetNumSmplJoints() const { return smpl_joints_.empty() ? 0 : 24; }
+    int GetNumSmplJoints() const { return !smpl_five_point_pose_.empty() ? 5 : smpl_joints_.empty() ? 0 : 24; }
 
     void print_summary() const {
         std::cout << name << ": " << timesteps << " frames, " << GetNumJoints()
@@ -73,6 +79,7 @@ struct MotionSequence {
     std::vector<double> joint_positions_, joint_velocities_;
     std::vector<Quaternion> body_quaternions_, smpl_root_quaternions_;
     std::vector<Point> smpl_joints_;
+    std::vector<double> smpl_five_point_pose_;
     std::vector<double> mujoco_positions_, mujoco_velocities_;
 
     // 返回帧视图前检查边界，防止重播或未来帧索引错误造成越界读取。
@@ -93,7 +100,8 @@ class MotionDataReader {
     int current_motion_index_ = 0;
 
     bool ReadFromCSV(const nlohmann::json& entries, bool use_smpl,
-                     uint32_t contract_id, const std::vector<std::string>& joint_names) {
+                     uint32_t contract_id, const std::vector<std::string>& joint_names,
+                     bool five_point = false) {
         if (!entries.is_array() || joint_names.size() != 21) {
             throw std::runtime_error("reference playlist requires an array and 21 policy joint names");
         }
@@ -117,7 +125,16 @@ class MotionDataReader {
             motion->mujoco_positions_ = ReadCSV(directory, arrays.at("qpos"), frames, 28);
             motion->mujoco_velocities_ = ReadCSV(directory, arrays.at("qvel"), frames, 27);
             if (use_smpl) {
-                motion->smpl_joints_ = ReadCSV3D<3>(directory, arrays.at("smpl_joints"), frames, 24);
+                if (metadata.value("smpl_input", std::string("full")) != (five_point ? "five_point" : "full"))
+                    throw std::runtime_error("SMPL CSV layout differs from selected policy: " + path);
+                if (five_point) {
+                    if (metadata.value("smpl_five_point_schema", 0) != 1 ||
+                        metadata.at("smpl_five_point_indices") != nlohmann::json::array({15, 20, 21, 7, 8}))
+                        throw std::runtime_error("SMPL five-point schema/order mismatch: " + path);
+                    motion->smpl_five_point_pose_ = ReadCSV(directory, arrays.at("smpl_five_point_pose"), frames, 45);
+                } else {
+                    motion->smpl_joints_ = ReadCSV3D<3>(directory, arrays.at("smpl_joints"), frames, 24);
+                }
                 motion->smpl_root_quaternions_ = ReadCSV3D<4>(directory, arrays.at("smpl_quat"), frames, 1);
             }
             loaded.push_back(std::move(motion));

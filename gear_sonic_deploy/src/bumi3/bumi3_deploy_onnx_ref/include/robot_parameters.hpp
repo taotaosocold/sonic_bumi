@@ -49,9 +49,11 @@ struct HeadingState {
   Quat init_ref_data_root_rot = Quat::Identity();
 };
 
-// 完整 SMPL 参考由十帧局部人体关节和根方向组成；离线和在线输入共用观测布局。
+// 人体参考按配置保存完整二十四点或五点四十五维特征；根方向单独保存，
+// 两种布局不能相互充当有效消息，离线与实时输入使用同一采集接口。
 struct PoseWindow {
   std::array<double, 720> joints{};
+  std::array<double, 450> five_point_pose{};
   std::array<Quat, 10> roots;
   int64_t last = -1;
   PoseWindow() { roots.fill(Quat::Identity()); }

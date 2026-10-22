@@ -22,7 +22,7 @@ struct DeployOptions {
   fs::path repository;
   std::string mode = "sim", encoder = "robot", input_type = "keyboard", provider;
   std::string config = "gear_sonic/utils/mujoco_sim/wbc_configs/bumi3_21dof_sonic_model12.yaml";
-  std::string obs_config, policy, smpl_policy, dataset, motion, motion_name, interface;
+  std::string obs_config, policy, smpl_policy, dataset, motion, motion_name, interface, smpl_input;
   std::string zmq_url, zmq_host, zmq_topic, output_dir, runtime_config;
   std::string engine_cache_dir;
   int zmq_port = 5556;
@@ -52,6 +52,7 @@ struct DeployOptions {
         {"--interface", &options.interface}, {"--zmq-url", &options.zmq_url},
         {"--zmq-host", &options.zmq_host}, {"--zmq-topic", &options.zmq_topic},
         {"--engine-cache-dir", &options.engine_cache_dir},
+        {"--smpl-input", &options.smpl_input},
         {"--prepare-launch", &options.output_dir}, {"--runtime-config", &options.runtime_config}};
     bool mode_seen = false;
     for (int i = 1; i < argc; ++i) {
@@ -110,6 +111,7 @@ struct DeployOptions {
                  "  --config YAML           deployment settings (repository relative)\n"
                  "  --obs-config YAML       observation/control contract\n"
                  "  --encoder robot|smpl    offline reference encoder\n"
+                 "  --smpl-input full|five_point  human reference layout (overrides YAML)\n"
                  "  --policy ONNX           offline policy (or live policy in live-only mode)\n"
                  "  --smpl-policy ONNX      live SMPL policy\n"
                  "  --dataset JSON          converted CSV manifest\n"
@@ -146,6 +148,10 @@ class DeploymentConfigParser {
     ValidateOptions();
     deploy_ = YAML::LoadFile(options_.Resolve(options_.config).string());
     if (deploy_["version"].as<int>() != 1) throw std::runtime_error("Deployment version must be 1");
+    smpl_input_ = options_.smpl_input.empty()
+        ? (deploy_["smpl_input"] ? deploy_["smpl_input"].as<std::string>() : "full") : options_.smpl_input;
+    if (smpl_input_ != "full" && smpl_input_ != "five_point")
+      throw std::runtime_error("smpl_input must be full or five_point");
     const auto inference = ReadInference();
     const auto obs_path = options_.Resolve(options_.obs_config.empty() ? deploy_["contract"].as<std::string>() : options_.obs_config);
     obs_ = YAML::LoadFile(obs_path.string());
@@ -159,6 +165,7 @@ class DeploymentConfigParser {
     ValidateTransport(ros, hardware);
     const bool offline = options_.input_type == "keyboard" || !options_.motion.empty() || !options_.dataset.empty();
     Json runtime{{"version", 1}, {"mode", options_.mode}, {"encoder", options_.encoder},
+                 {"smpl_input", smpl_input_},
                  {"input_type", options_.input_type}, {"provider", inference.at("provider")},
                  {"inference", inference},
                  {"contract", fields}, {"reference_contract_id", reference_id},
@@ -484,6 +491,8 @@ class DeploymentConfigParser {
       if (data.at("version") != 1 || data.at("format") != "bumi3_csv_v1" || data.at("encoder") != options_.encoder ||
           data.at("reference_contract_id") != reference_id || data.at("policy_joint_names") != names ||
           (!name.empty() && data.at("name") != name)) throw std::runtime_error("Converted motion contract mismatch: " + path.string());
+      if (options_.encoder == "smpl" && data.value("smpl_input", std::string("full")) != smpl_input_)
+        throw std::runtime_error("SMPL CSV layout mismatch; reconvert for selected smpl_input: " + path.string());
       const std::string motion_name = data.at("name");
       if (!seen.insert(motion_name).second) throw std::runtime_error("Duplicate motion name: " + motion_name);
       entries.push_back(Json{{"name", motion_name}, {"reference", fs::absolute(path).string()}});
@@ -536,5 +545,6 @@ class DeploymentConfigParser {
 
   const DeployOptions& options_;
   YAML::Node deploy_, obs_;
+  std::string smpl_input_ = "full";
 };
 }  // BUMI3 原生启动配置的命名空间。

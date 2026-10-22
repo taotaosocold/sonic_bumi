@@ -895,8 +895,9 @@ def _pose_stream_common(
     enable_smpl_vis: bool = False,
     reader=None,
     smpl_only: bool = False,
+    smpl_five_point: bool = False,
 ):
-    """Shared pose streaming loop used by run_pico."""
+    """复用读取器和发布循环；五点模式直接选取身体骨架，不进入完整人体重建。"""
     if reader is None:
         if xrt is None:
             raise ImportError(
@@ -907,8 +908,8 @@ def _pose_stream_common(
         reader = PicoReader(max_queue_size=buffer_size)
         reader.start()
 
-    # Create 3-point pose processor with visualization settings
-    three_point = None if smpl_only else ThreePointPose(
+    # 两种人体专用输入均跳过 G1 的三点标定、手部求解与可视化处理。
+    three_point = None if (smpl_only or smpl_five_point) else ThreePointPose(
         enable_vis_vr3pt=enable_vis_vr3pt,
         with_g1_robot=with_g1_robot,
         enable_waist_tracking=enable_waist_tracking,
@@ -916,18 +917,27 @@ def _pose_stream_common(
         log_prefix=log_prefix,
     )
 
-    streamer = PoseStreamer(
-        socket=socket,
-        reader=reader,
-        three_point=three_point,
-        num_frames_to_send=num_frames_to_send,
-        target_fps=target_fps,
-        use_cuda=use_cuda,
-        record_dir=record_dir,
-        record_format=record_format,
-        log_prefix=log_prefix,
-        smpl_only=smpl_only,
-    )
+    if smpl_five_point:
+        from gear_sonic.utils.teleop.five_point_streamer import FivePointPoseStreamer
+
+        streamer = FivePointPoseStreamer(
+            socket=socket, reader=reader, num_frames_to_send=num_frames_to_send,
+            target_fps=target_fps, record_dir=record_dir,
+            record_format=record_format, log_prefix=log_prefix,
+        )
+    else:
+        streamer = PoseStreamer(
+            socket=socket,
+            reader=reader,
+            three_point=three_point,
+            num_frames_to_send=num_frames_to_send,
+            target_fps=target_fps,
+            use_cuda=use_cuda,
+            record_dir=record_dir,
+            record_format=record_format,
+            log_prefix=log_prefix,
+            smpl_only=smpl_only,
+        )
 
     if stop_event is None:
         stop_event = threading.Event()
@@ -1631,15 +1641,16 @@ def run_pico(
     enable_smpl_vis: bool = False,
     input_source: str = "xrt",
     smpl_only: bool = False,
+    smpl_five_point: bool = False,
 ):
-    """Run body tracking with real-time visualization and ZMQ streaming."""
+    """启动身体追踪发布端；原有完整人体路径和新增五点路径共用网络与读取器。"""
     reader = _init_input_source(input_source, buffer_size)
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
     socket.bind(f"tcp://*:{port}")
     time.sleep(0.1)
     print(f"ZMQ socket bound to port {port}")
-    if not smpl_only and build_command_message is not None and build_planner_message is not None:
+    if not (smpl_only or smpl_five_point) and build_command_message is not None and build_planner_message is not None:
         try:
             socket.send(build_command_message(start=False, stop=False, planner=False))
             socket.send(build_planner_message(0, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], -1.0, -1.0))
@@ -1662,6 +1673,7 @@ def run_pico(
             enable_smpl_vis=enable_smpl_vis,
             reader=reader,
             smpl_only=smpl_only,
+            smpl_five_point=smpl_five_point,
         )
     finally:
         socket.close()
@@ -2193,6 +2205,8 @@ if __name__ == "__main__":
     parser.add_argument("--target_fps", type=int, default=50, help="Target loop FPS (default: 50)")
     parser.add_argument("--smpl-only", action="store_true",
                         help="Publish SMPL only for BUMI3; skip G1 FK, wrist targets and hand IK")
+    parser.add_argument("--smpl-five-point", action="store_true",
+                        help="直接发布头、双腕、双踝的局部姿态及根朝向，供五点模型使用")
     parser.add_argument(
         "--cuda", action="store_true", help="Use CUDA for tensors and model (default: CPU)"
     )
@@ -2277,9 +2291,13 @@ if __name__ == "__main__":
         ),
     )
     args = parser.parse_args()
-    if args.smpl_only and (args.manager or args.vis_vr3pt or args.vis_smpl or args.waist_tracking):
-        parser.error("--smpl-only uses direct pose streaming; remove --manager and G1 visualization flags")
-    if args.smpl_only and (args.target_fps != 50 or args.num_frames_to_send < 10):
+    if args.smpl_only and args.smpl_five_point:
+        parser.error("--smpl-only 与 --smpl-five-point 对应不同模型，请只选择一种")
+    if (args.smpl_only or args.smpl_five_point) and (
+            args.manager or args.vis_vr3pt or args.vis_smpl or args.waist_tracking or
+            args.vr3pt_test or args.vr3pt_live or args.vr3pt_realtime):
+        parser.error("人体专用模式不使用 --manager 或 G1 三点可视化参数")
+    if (args.smpl_only or args.smpl_five_point) and (args.target_fps != 50 or args.num_frames_to_send < 10):
         parser.error("BUMI3 SMPL streaming requires --target_fps 50 --num_frames_to_send 10 (or more)")
 
     # This process executes one SMPL sample at a time at 50 Hz.  PyTorch's
@@ -2356,4 +2374,5 @@ if __name__ == "__main__":
             enable_smpl_vis=args.vis_smpl,
             input_source=args.input_source,
             smpl_only=args.smpl_only,
+            smpl_five_point=args.smpl_five_point,
         )

@@ -1,0 +1,47 @@
+# 独立的 Robot＋人体五点双编码器部署配置；模型必须来自新的五点训练任务。
+# 资产路径相对于仓库根目录，关节映射、增益和反馈历史继续使用同一机器人契约。
+ROBOT_TYPE: bumi3_21dof
+SIMULATOR: mujoco
+NUM_JOINTS: 21
+DOMAIN_ID: &bumi3_domain 0
+
+version: 1
+contract: gear_sonic_deploy/policy/bumi3/observation_config.yaml
+# 完整人体模型默认使用 full；本配置明确切换五点姿态、CSV 与实时消息布局。
+smpl_input: five_point
+policies:
+  # 将同一个新训练检查点导出的两个联合 ONNX 分别放到下列位置。
+  # Robot 输入仍为 1170 维；人体五点输入为 1200 维，不能使用旧的 1470 维模型。
+  robot: gear_sonic_deploy/policy/bumi3/five_point/robot/model.onnx
+  smpl: gear_sonic_deploy/policy/bumi3/five_point/smpl/model.onnx
+dataset: gear_sonic_deploy/reference/bumi3_example/converted_five_point/dataset.json
+inference:
+  # 延续原部署的 TensorRT、单卡、单精度与引擎缓存设置。
+  provider: tensorrt
+  device_id: 0
+  fp16: false
+  cuda_graph: false
+  engine_cache_dir: .local/bumi3/tensorrt
+  workspace_size_mb: 1024
+ros2:
+  domain_id: *bumi3_domain
+  state_topic: /noetix/low_state
+  command_topic: /noetix/low_cmd
+  request_topic: /noetix/control_request
+  sim_reset_topic: /noetix/sim/reset
+  sim_status_topic: /noetix/sim/status
+  sim_reference_topic: /noetix/sim/reference
+  state_timeout: 0.25
+  command_timeout: 0.25
+teleop:
+  endpoint: tcp://127.0.0.1:5556
+  topic: pose
+  startup_timeout: 300.0
+  stream_timeout: 0.5
+hardware:
+  robot_root: gear_sonic_deploy/thirdparty/new_ws/src/noetix_robots/bumi3
+  # 根据部署电脑选择实际网卡；USB IMU 开关和串口仍在共用网络配置中设置。
+  network: gear_sonic_deploy/thirdparty/new_ws/src/noetix_robots/common/bumi/network.yaml
+  io_frequency: 1000
+  entry_duration: 3.0
+  imu_to_base_wxyz: [1.0, 0.0, 0.0, 0.0]
