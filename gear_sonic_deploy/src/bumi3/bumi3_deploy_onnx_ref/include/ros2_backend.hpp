@@ -177,12 +177,11 @@ class RosBackend {
     message.sequence = ++sequence_;
     for (int i = 0; i < BUMI3_NUM_MOTOR; ++i) {
       const auto& mapping = config_.at("joint_mappings")[i];
-      const double q = command.q_target[i];
+      double q = command.q_target[i];
       if (!std::isfinite(q) || !std::isfinite(command.dq_target[i]) || !std::isfinite(command.tau_ff[i]) ||
           !std::isfinite(command.kp[i]) || !std::isfinite(command.kd[i]) || command.kp[i] < 0 || command.kd[i] < 0)
         throw std::runtime_error("Invalid motor command");
-      // 仿真与真机统一透传策略的 PD 目标角，保留训练时目标误差与力矩的对应关系；
-      // 此处仅转换执行器坐标，实际输出力矩仍由环境端按配置限幅。
+      if (real_) q = std::clamp(q, config_.at("joint_min")[i].get<double>(), config_.at("joint_max")[i].get<double>());
       noetix_msgs::msg::MotorCmd motor;
       motor.name = mapping.at("actuator");
       motor.q = float((q - mapping.at("offset").get<double>()) * mapping.at("direction").get<double>());
