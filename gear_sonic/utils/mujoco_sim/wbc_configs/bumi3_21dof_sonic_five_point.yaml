@@ -4,6 +4,15 @@ ROBOT_TYPE: bumi3_21dof
 SIMULATOR: mujoco
 NUM_JOINTS: 21
 DOMAIN_ID: &bumi3_domain 0
+# 与普通 BUMI3 配置使用相同的悬挂准备流程；7/8 调高度，9 释放，均在 MuJoCo 窗口操作。
+ENABLE_ELASTIC_BAND: true
+ELASTIC_BAND_HEIGHT: 0.75
+elastic_band:
+  # 按当前 MJCF 整机质量缩放位置增益，五点模型不会覆盖物理参数或准备姿态。
+  position_stiffness_per_kg: 400.0
+  position_damping_per_kg: 40.0
+  orientation_stiffness: 100.0
+  orientation_damping: 10.0
 
 version: 1
 contract: gear_sonic_deploy/policy/bumi3/observation_config.yaml

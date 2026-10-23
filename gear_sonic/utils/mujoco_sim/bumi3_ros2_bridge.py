@@ -1,4 +1,4 @@
-"""MuJoCo environment using the same Noetix ROS 2 API as the hardware bridge."""
+"""以真实重力和可释放悬挂带运行 MuJoCo，并沿用真机的 Noetix ROS 2 接口。"""
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, SimpleQueue
@@ -9,6 +9,7 @@ import time
 import mujoco
 import numpy as np
 import rclpy
+from scipy.spatial.transform import Rotation
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -33,6 +34,45 @@ class Args:
     show_reference: bool = True
 
 
+class ElasticBand:
+    """沿用 G1 的悬挂带接口，在环境端为浮动根提供可释放的位姿弹簧。
+
+    位置增益按当前 MJCF 的整机质量缩放，避免把 G1 的绝对增益直接用于 BUMI3。
+    四项增益都可由配置覆盖；这些力只用于悬挂，不改变策略关节的 PD 参数。
+    """
+
+    def __init__(self, mass, point, settings):
+        self.kp_pos = mass * float(settings.get('position_stiffness_per_kg', 400.0))
+        self.kd_pos = mass * float(settings.get('position_damping_per_kg', 40.0))
+        self.kp_ang = float(settings.get('orientation_stiffness', 100.0))
+        self.kd_ang = float(settings.get('orientation_damping', 10.0))
+        gains = np.array([self.kp_pos, self.kd_pos, self.kp_ang, self.kd_ang])
+        if not np.isfinite(gains).all() or (gains <= 0).any():
+            raise ValueError('elastic_band gains must be finite and positive')
+        self.point = np.asarray(point, dtype=float).copy()
+        self.length = 0.0
+        self.enable = True
+
+    def Advance(self, pose):
+        """由世界坐标下的位置、姿态和速度计算根部所受的三维力与力矩。"""
+        position, quaternion = pose[:3], pose[3:7]
+        linear_velocity, angular_velocity = pose[7:10], pose[10:13]
+        error = self.point - position + np.array([0.0, 0.0, self.length])
+        force = self.kp_pos * error - self.kd_pos * linear_velocity
+        rotation = Rotation.from_quat(quaternion[[1, 2, 3, 0]])
+        torque = -self.kp_ang * rotation.as_rotvec() - self.kd_ang * angular_velocity
+        return np.concatenate([force, torque])
+
+    def MujuocoKeyCallback(self, key):
+        """保留 G1 按键习惯：7 降低、8 升高、9 开关悬挂带，每次调高低 0.1 米。"""
+        if key == ord('7'):
+            self.length -= 0.1
+        elif key == ord('8'):
+            self.length += 0.1
+        elif key == ord('9'):
+            self.enable = not self.enable
+
+
 class Bumi3Ros2Bridge(Node):
     def __init__(self, config, contract, runner):
         super().__init__('bumi3_mujoco')
@@ -41,6 +81,22 @@ class Bumi3Ros2Bridge(Node):
         self.runner = runner
         self.mapping = joint_mappings(config, contract)
         self.keys = SimpleQueue()
+        self.control_keys = SimpleQueue()
+        self.band_attached_link = runner.base_body_id
+        self.elastic_band = None
+        if config.get('ENABLE_ELASTIC_BAND', True):
+            # 只在环境创建时设置悬挂起点；控制端启动、切换动作和播放不会瞬移根或关节。
+            # 默认关节来自静态训练站姿，根高 0.75 米让双脚离地，供统一准备流程使用。
+            height = float(config.get('ELASTIC_BAND_HEIGHT', 0.75))
+            if not np.isfinite(height) or height <= 0:
+                raise ValueError('ELASTIC_BAND_HEIGHT must be finite and positive')
+            runner.data.qpos[2] = height
+            runner.data.qvel[:] = 0.0
+            mujoco.mj_forward(runner.model, runner.data)
+            mass = float(np.sum(runner.model.body_mass))
+            self.elastic_band = ElasticBand(
+                mass, runner.data.xpos[self.band_attached_link], config.get('elastic_band', {}),
+            )
         self.command = None
         self.received = 0.0
         self.enabled = False
@@ -90,6 +146,11 @@ class Bumi3Ros2Bridge(Node):
             self.enabled = False
             self.command = None
             self.runner.data.ctrl[:] = 0
+        elif request == 'release_elastic_band' and self.elastic_band is not None:
+            # 无窗口模式不能接收 GUI 的 9 键，因此额外提供明确的释放请求。
+            # 回调与物理积分共用主线程；只关闭悬挂，不改变电机使能或策略状态。
+            self.elastic_band.enable = False
+            self.get_logger().info('Elastic band released by ROS2 request')
 
     def reset(self, message):
         # Simulator-only: [contract CRC32, request sequence, qpos(28), qvel(27)].
@@ -121,23 +182,45 @@ class Bumi3Ros2Bridge(Node):
             self.ghost = values
 
     def step(self):
+        # 可视化回调只入队，所有悬挂带修改和物理积分都在环境主线程执行。
+        # 其余按键继续转发给 C++ 控制端，Python 环境端不承担策略或参考播放逻辑。
+        while True:
+            try:
+                key = self.keys.get_nowait()
+            except Empty:
+                break
+            if self.elastic_band is not None and key in (ord('7'), ord('8'), ord('9')):
+                self.elastic_band.MujuocoKeyCallback(key)
+                height = self.elastic_band.point[2] + self.elastic_band.length
+                print(f'BUMI3_ELASTIC_BAND enabled={self.elastic_band.enable} target_height={height:.2f}', flush=True)
+            else:
+                self.control_keys.put(key)
         if self.enabled and time.monotonic() - self.received > self.settings['command_timeout']:
             self.enabled = False
             self.command = None
             self.get_logger().error('LowCmd timeout; simulation disabled')
-        if not self.enabled or self.command is None:
-            self.runner.data.ctrl[:] = 0
-            return
-        q, dq = self.runner._joint_state_policy()
-        directions = np.array([item['direction'] for item in self.mapping])
-        offsets = np.array([item['offset'] for item in self.mapping])
-        cmd = self.command
-        target = cmd[:, 0] * directions + offsets
-        target_velocity = cmd[:, 1] * directions
-        torque = cmd[:, 3] * (target - q) + cmd[:, 4] * (target_velocity - dq) + cmd[:, 2] * directions
-        effort = self.contract.effort_mujoco[self.contract.mujoco_to_policy]
-        torque = np.clip(torque, -effort, effort)
-        self.runner.data.ctrl[self.runner.actuator_ids] = torque[self.contract.policy_to_mujoco]
+        self.runner.data.ctrl[:] = 0
+        if self.enabled and self.command is not None:
+            q, dq = self.runner._joint_state_policy()
+            directions = np.array([item['direction'] for item in self.mapping])
+            offsets = np.array([item['offset'] for item in self.mapping])
+            cmd = self.command
+            target = cmd[:, 0] * directions + offsets
+            target_velocity = cmd[:, 1] * directions
+            torque = cmd[:, 3] * (target - q) + cmd[:, 4] * (target_velocity - dq) + cmd[:, 2] * directions
+            effort = self.contract.effort_mujoco[self.contract.mujoco_to_policy]
+            torque = np.clip(torque, -effort, effort)
+            self.runner.data.ctrl[self.runner.actuator_ids] = torque[self.contract.policy_to_mujoco]
+        self.runner.data.xfrc_applied[self.band_attached_link] = 0
+        if self.elastic_band is not None and self.elastic_band.enable:
+            # mj_objectVelocity 按“角速度、线速度”返回世界系速度；与 G1 一样先交换后传给 Advance。
+            velocity = np.empty(6)
+            mujoco.mj_objectVelocity(self.runner.model, self.runner.data, mujoco.mjtObj.mjOBJ_BODY,
+                                    self.band_attached_link, velocity, 0)
+            pose = np.concatenate([self.runner.data.xpos[self.band_attached_link],
+                                   self.runner.data.xquat[self.band_attached_link], velocity[3:], velocity[:3]])
+            self.runner.data.xfrc_applied[self.band_attached_link] = self.elastic_band.Advance(pose)
+        # 未使能只意味着电机不输出力矩，重力和悬挂带仍参与积分，不能把整个机器人冻结在空中。
         mujoco.mj_step(self.runner.model, self.runner.data)
         mujoco.mj_forward(self.runner.model, self.runner.data)
         if not np.isfinite(self.runner.data.qpos).all() or not np.isfinite(self.runner.data.qvel).all():
@@ -171,7 +254,7 @@ class Bumi3Ros2Bridge(Node):
         message.status.mode = RobotStatus.MODE_ENABLED if self.enabled else RobotStatus.MODE_DISABLED
         self.state_publisher.publish(message)
         try:
-            self.key = self.keys.get_nowait()
+            self.key = self.control_keys.get_nowait()
             self.key_sequence += 1
         except Empty:
             pass
@@ -206,6 +289,10 @@ def main(args: Args):
             from mujoco import viewer as mujoco_viewer
             viewer = mujoco_viewer.launch_passive(runner.model, runner.data, key_callback=bridge.keys.put)
         print(f"BUMI3_SIM_READY ROS2 domain={config['ros2']['domain_id']} physics_hz={1/contract.sim_dt:g}", flush=True)
+        if bridge.elastic_band is not None:
+            print('BUMI3_SIM_SUSPENDED: MuJoCo窗口 7降低 / 8升高 / 9开关悬挂；控制端准备完成后下放接地，再释放悬挂', flush=True)
+            if args.headless:
+                print(f"BUMI3_HEADLESS_BAND: domain={domain}; 向 {config['ros2']['request_topic']} 发布 std_msgs/msg/String 的 release_elastic_band 请求释放悬挂", flush=True)
         last_view = 0.0
         while rclpy.ok() and (viewer is None or viewer.is_running()):
             tick = time.monotonic()

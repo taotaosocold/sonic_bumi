@@ -39,6 +39,7 @@ class Bumi3Deploy {
     live_ = !has_offline_;
     current_encoder_mode_ = live_ || offline_smpl_ ? 1 : 0;
     control_dt_ = policy_parameters_.control_dt;
+    duration_ = config_.at("entry_duration").get<double>();
 
     // 与 G1 一样先预加载动作，再初始化模型与观测函数；控制循环和切换动作不读取 CSV。
     if (has_offline_) {
@@ -69,19 +70,19 @@ class Bumi3Deploy {
 
     backend_ = std::make_unique<RosBackend>(config_);
     used_low_state_data_ = backend_->WaitForState();
-    // 初始化只确认反馈有效，不把电机去使能作为启动前置条件。
-    // 真机仍等待操作员按 ]，再由 InitControl 请求使能并平滑进入参考起始姿态。
+    // 与 G1 一样由 INIT 自动进入默认站姿；键盘仅请求策略接管与参考播放。
+    // Noetix 的使能确认仍由后端负责，默认站姿使用本机器人的训练参数。
     input_interface_ = std::make_unique<SimpleKeyboard>();
     if (has_live_) zmq_interface_ = std::make_unique<ZMQEndpointInterface>(config_.at("teleop"), five_point_);
-    operator_state.play = config_.at("autoplay");
-    reset_with_reference_velocity_ = operator_state.play;
+    operator_state.play = false;
     if (live_) {
       std::cout << "Waiting for ten-frame SMPL stream\n";
       frozen_pose_ = zmq_interface_->WaitForPose(config_.at("teleop").at("startup_timeout"));
       live_pose_snapshot_ = frozen_pose_;
     }
     program_state_ = ProgramState::INIT;
-    std::cout << "BUMI3_CONTROL_READY native_cpp: ] prepare-pose (real) / T start-policy/play-pause / P next / R restart / ENTER offline-live / O stop\n";
+    std::cout << "BUMI3_STARTUP: enabling drives and preparing default standing pose; support real robot before launch\n"
+              << "BUMI3_CONTROL_READY native_cpp: ] start-policy / T play / R restart-paused / N next / P previous / I align-heading / ENTER offline-live / O stop\n";
   }
 
   void Run() {
@@ -163,8 +164,10 @@ class Bumi3Deploy {
         while (!StopRequested()) {
           (this->*callback)();
           next += period;
-          // 超时后跳过遗漏的调度周期，避免集中补发旧命令或快速推进多帧参考动作。
-          if (next < Time::now()) next = Time::now() + period;
+          // 沿固定周期网格跳过已经错过的时刻，不补发旧命令；超时后只等待到下一个周期，
+          // 避免在回调耗时之外再完整等待一次周期，进一步降低实际控制频率。
+          const auto now = Time::now();
+          if (next <= now) next += period * ((now - next) / period + 1);
           std::unique_lock<std::mutex> lock(wakeup_mutex_);
           wakeup_.wait_until(lock, next, [this] { return StopRequested(); });
         }
@@ -458,159 +461,108 @@ class Bumi3Deploy {
     reinitialize_heading_ = true;
   }
 
-  // 仿真初始化属于环境职责，独立于朝向对齐和观测采集；真机不允许执行位置瞬移。
-  void ResetSimulation() {
-    if (real_) throw std::runtime_error("Hardware cannot teleport");
-    ClearMotorCommand();
-    const auto positions = live_ ? config_.at("static_qpos").get<std::vector<double>>()
-                                : std::vector<double>(current_motion_->MujocoPositions(current_frame_),
-                                                      current_motion_->MujocoPositions(current_frame_) + 28);
-    std::vector<double> velocities(27, 0);
-    if (reset_with_reference_velocity_ && !live_)
-      velocities.assign(current_motion_->MujocoVelocities(current_frame_), current_motion_->MujocoVelocities(current_frame_) + 27);
-    backend_->Reset(positions, velocities);
-    backend_->Enable();
-    enabled_ = true;
-    // qpos 的驱动关节顺序不是策略顺序，初始化目标只能从策略参考或默认姿态读取。
-    MotorCommand command = policy_parameters_.CreatePositionCommand(
-        live_ ? policy_parameters_.default_angles.data() : current_motion_->JointPositions(current_frame_));
-    SetMotorCommand(std::move(command));
-  }
-
+  // INIT 与 G1 使用相同职责：从实测姿态平滑进入默认站姿，随后只做 PD 保持。
+  // 仿真与真机走同一条路径，不读取动作首帧初始化机器人，也不自动启动策略。
   bool InitControl() {
-    if (!real_) {
-      ResetSimulation();
-      ResetObservationHistory();
-      UpdateHeadingState();
-      operator_state.start = true;
-      program_state_ = ProgramState::WAIT_FOR_CONTROL;
-      return true;
-    }
-    if (!operator_state.start) {
-      ResetObservationHistory();
-      program_state_ = ProgramState::WAIT_FOR_CONTROL;
-      return true;
-    }
-    if (!entry_started_) {
+    if (!enabled_) {
       backend_->Enable();
       enabled_ = true;
       used_low_state_data_ = backend_->GetState();
-      entry_start_ = used_low_state_data_.q;
-      entry_step_ = 0;
-      entry_started_ = true;
+      time_ = 0.0;
     }
-    const int steps = std::max(1, int(config_.at("entry_duration").get<double>() / control_dt_));
-    if (entry_step_ < steps) {
-      MotorCommand command = policy_parameters_.CreatePositionCommand(policy_parameters_.default_angles.data());
-      ++entry_step_;
-      for (int i = 0; i < BUMI3_NUM_MOTOR; ++i) {
-        const double end = live_ ? policy_parameters_.default_angles[i] : current_motion_->JointPositions(current_frame_)[i];
-        command.q_target[i] = entry_start_[i] + (end - entry_start_[i]) * entry_step_ / steps;
-      }
-      SetMotorCommand(std::move(command));
-      return true;
+    MotorCommand command = policy_parameters_.CreatePositionCommand(policy_parameters_.default_angles.data());
+    time_ += control_dt_;
+    if (time_ < duration_) {
+      const double ratio = std::clamp(time_ / duration_, 0.0, 1.0);
+      for (int i = 0; i < BUMI3_NUM_MOTOR; ++i)
+        command.q_target[i] = used_low_state_data_.q[i] * (1.0 - ratio) + policy_parameters_.default_angles[i] * ratio;
+    } else {
+      operator_state.start = false;
+      operator_state.play = false;
+      program_state_ = ProgramState::WAIT_FOR_CONTROL;
+      std::cout << "BUMI3_INIT_DONE: default standing pose held; press ] to start policy with reference paused" << std::endl;
     }
-    // 姿态过渡完成只进入 PD 保持，不沿用按 ] 设置的启动标志自动运行策略。
-    // 保留最后一帧目标，由 LowCommandWriter 持续下发；只有之后按 T 才允许策略接管。
-    operator_state.start = false;
-    operator_state.play = false;
-    program_state_ = ProgramState::WAIT_FOR_CONTROL;
-    entry_started_ = false;
-    std::cout << "BUMI3_REAL_HOLDING: preparation pose held; policy inactive; press T to start policy and motion" << std::endl;
+    SetMotorCommand(std::move(command));
     return true;
   }
 
-  std::vector<int> ReadKeys() {
-    auto keys = input_interface_->ReadKeys();
-    const auto gui = backend_->ReadKeys();
-    keys.insert(keys.end(), gui.begin(), gui.end());
-    for (auto& key : keys) {
-      if (key == 257) key = '\n';
-      if (key >= 'a' && key <= 'z') key -= 'a' - 'A';
-    }
-    return keys;
-  }
-
+  // 输入接口与 G1 一样使用 update/handle_input，将按键翻译为操作请求。
+  // 请求经队列交给控制线程应用，避免输入线程与推理线程同时修改参考及朝向。
   void Input() {
-    auto keys = ReadKeys();
-    if (std::find(keys.begin(), keys.end(), 'O') != keys.end()) {
+    input_interface_->update(backend_->ReadKeys());
+    const auto input = input_interface_->handle_input();
+    if (input.stop_control) {
       // 停止请求直接唤醒主线程，不等待推理结束，也不排在普通按键队列后面。
       RequestStop();
       return;
     }
+    if (!(input.start_control || input.play_motion || input.motion_prev || input.motion_next ||
+          input.motion_restart || input.reinitialize || input.switch_source)) return;
     std::lock_guard<std::mutex> lock(input_mutex_);
-    if (pending_keys_.size() + keys.size() > 128) throw std::runtime_error("BUMI3 input queue overflow");
-    pending_keys_.insert(pending_keys_.end(), keys.begin(), keys.end());
+    if (pending_input_commands_.size() >= 128) throw std::runtime_error("BUMI3 input queue overflow");
+    pending_input_commands_.push_back(input);
   }
 
   void ApplyInputCommands() {
-    std::vector<int> keys;
+    std::vector<InputCommand> inputs;
     {
       std::lock_guard<std::mutex> lock(input_mutex_);
-      keys.swap(pending_keys_);
+      inputs.swap(pending_input_commands_);
     }
-    // 只有控制线程改变播放、动作、观测布局与状态机；输入线程只提交有序按键。
-    for (const auto key : keys) {
+    for (const auto& input : inputs) {
       if (StopRequested()) return;
-      // 与 G1 的 INIT 状态对应，进入姿态期间仅处理停止，不允许切换正在过渡的参考。
-      if (real_ && entry_started_) continue;
-      if (key == ']' && real_ && !enabled_) {
-        std::cout << "BUMI3_ENABLE_KEY_RECEIVED: requesting enable and entry pose" << std::endl;
-        operator_state.start = true;
+      // 与 G1 一样，切换动作只改变内存中的参考和播放游标；机器人本体不瞬移、
+      // 不重新去使能，也不再次进入准备站姿，上一周期动作继续作为历史反馈。
+      if (!live_ && (input.motion_prev || input.motion_next)) {
+        const auto count = motion_reader_.motions.size();
+        const auto index = motion_reader_.current_motion_index_;
+        motion_reader_.current_motion_index_ = input.motion_next ? (index + 1) % count : (index + count - 1) % count;
+        current_motion_ = motion_reader_.GetMotionShared(motion_reader_.current_motion_index_);
         operator_state.play = false;
-        program_state_ = ProgramState::INIT;
-      } else if (key == 'T') {
-        if (real_ && !enabled_) { std::cout << "Press ] before playing\n"; continue; }
+        current_frame_ = 0;
+        reinitialize_heading_ = true;
+        std::cout << "BUMI3_MOTION=" << current_motion_->name << " frame=0 paused\n";
+      }
+      if (input.switch_source && has_live_ && has_offline_) {
+        if (!live_) {
+          // 来源切换必须立即获得有效窗口，不能在控制线程等待数分钟并中断命令续期。
+          frozen_pose_ = zmq_interface_->GetLatestPose();
+          live_pose_snapshot_ = frozen_pose_;
+        }
+        live_ = !live_;
+        operator_state.play = false;
+        current_frame_ = 0;
+        reinitialize_heading_ = true;
+        current_encoder_mode_ = live_ || offline_smpl_ ? 1 : 0;
+        InitializeObservationFunctions();
+        std::cout << "BUMI3_SOURCE=" << (live_ ? "live_smpl" : "offline") << '\n';
+      }
+      if (input.motion_restart) {
+        operator_state.play = false;
+        current_frame_ = 0;
         if (live_) {
           frozen_pose_ = zmq_interface_->GetLatestPose();
           live_pose_snapshot_ = frozen_pose_;
-          if (!operator_state.play) {
-            // 恢复实时播放只清空历史动作，不重新对齐朝向，避免把当前转身目标消掉。
-            used_low_state_data_ = backend_->GetState();
-            last_action.assign(BUMI3_NUM_MOTOR, 0);
-            state_logger_->ResetHistory(used_low_state_data_);
-          }
-        } else if (!operator_state.play && current_frame_ == current_motion_->timesteps - 1) {
-          if (real_) { std::cout << "Press R then ] to restart\n"; continue; }
-          current_frame_ = 0;
-          reset_with_reference_velocity_ = false;
-          program_state_ = ProgramState::INIT;
         }
-        operator_state.play = !operator_state.play;
-        // 真机保持准备姿态时，T 才设置独立的策略启动请求；播放状态本身不触发自动接管。
-        // 进入 CONTROL 后，T 继续仅切换参考播放，保留原有的暂停与恢复行为。
-        if (real_ && program_state_ == ProgramState::WAIT_FOR_CONTROL)
-          operator_state.start = operator_state.play;
-      } else if ((key == 'P' || key == 'R') && !live_) {
-        ClearMotorCommand();
-        backend_->Disable();
-        enabled_ = false;
-        operator_state.play = false;
-        operator_state.start = false;
-        current_frame_ = 0;
-        if (key == 'P') {
-          motion_reader_.current_motion_index_ = (motion_reader_.current_motion_index_ + 1) % motion_reader_.motions.size();
-          current_motion_ = motion_reader_.GetMotionShared(motion_reader_.current_motion_index_);
+        reinitialize_heading_ = true;
+        std::cout << "BUMI3_REFERENCE_PAUSED: frame=0; policy state unchanged\n";
+      }
+      if (input.reinitialize) reinitialize_heading_ = true;
+      if (input.start_control) {
+        if (program_state_ == ProgramState::WAIT_FOR_CONTROL) operator_state.start = true;
+        else if (program_state_ == ProgramState::INIT) std::cout << "Wait for BUMI3_INIT_DONE before pressing ]\n";
+      }
+      if (input.play_motion && !operator_state.play) {
+        if (program_state_ != ProgramState::CONTROL) {
+          std::cout << "Press ] to start policy before pressing T to play\n";
+        } else if (!live_ && current_motion_->timesteps > 1 && current_frame_ == current_motion_->timesteps - 1) {
+          std::cout << "Motion finished; press R to restart paused, then T to play\n";
+        } else {
+          // T 只启动或继续参考播放，不清空历史、不重新对齐朝向、不切换策略状态。
+          if (live_) live_pose_snapshot_ = zmq_interface_->GetLatestPose();
+          operator_state.play = true;
+          std::cout << "BUMI3_PLAYING: source=" << (live_ ? "live_smpl" : "offline") << " frame=" << current_frame_ << '\n';
         }
-        reset_with_reference_velocity_ = false;
-        program_state_ = ProgramState::INIT;
-        std::cout << "BUMI3_MOTION=" << current_motion_->name << '\n';
-      } else if ((key == '\n' || key == '\r') && has_live_ && has_offline_) {
-        ClearMotorCommand();
-        backend_->Disable();
-        enabled_ = false;
-        operator_state.play = false;
-        operator_state.start = false;
-        live_ = !live_;
-        if (live_) {
-          frozen_pose_ = zmq_interface_->WaitForPose(config_.at("teleop").at("startup_timeout"), &stop_requested_);
-          live_pose_snapshot_ = frozen_pose_;
-        }
-        current_encoder_mode_ = live_ || offline_smpl_ ? 1 : 0;
-        InitializeObservationFunctions();
-        reset_with_reference_velocity_ = false;
-        program_state_ = ProgramState::INIT;
-        std::cout << "BUMI3_SOURCE=" << (live_ ? "live_smpl" : "offline") << '\n';
       }
     }
   }
@@ -665,29 +617,54 @@ class Bumi3Deploy {
         if (!InitControl()) throw std::runtime_error("BUMI3 InitControl failed");
         break;
       case ProgramState::WAIT_FOR_CONTROL:
-        // 没有新的启动请求就保留最后的 PD 目标，不采集策略观测、不推理，也不推进参考帧。
-        // 真机在 T 触发接管时重新初始化历史与朝向，避免使用漫长保持阶段之前的状态。
+        // 与 G1 相同，等待阶段只保持默认站姿；] 单独请求接管，T 单独请求播放。
+        // 两种环境在接管时用同一份实测状态填充历史，不依赖仿真首帧瞬移或提前推理。
         if (operator_state.start) {
-          if (real_) {
-            if (!enabled_) throw std::runtime_error("Prepare pose with ] before starting policy");
-            ResetObservationHistory();
-            UpdateHeadingState();
-            std::cout << "BUMI3_POLICY_STARTED: policy control and reference playback active" << std::endl;
+          if (!enabled_) throw std::runtime_error("Drives are not enabled after preparation");
+          if (live_) {
+            frozen_pose_ = zmq_interface_->GetLatestPose();
+            live_pose_snapshot_ = frozen_pose_;
           }
+          ResetObservationHistory();
+          UpdateHeadingState();
           operator_state.start = false;
+          // 显式指定仿真自动播放时，仍必须先按 ] 接管；真机始终等待单独的 T 请求。
+          operator_state.play = !real_ && config_.at("autoplay").get<bool>();
           program_state_ = ProgramState::CONTROL;
+          last_control_time_.reset();
+          logging_counter_ = 0;
+          max_control_interval_ms_ = 0.0;
+          std::cout << "BUMI3_POLICY_STARTED: reference=" << (operator_state.play ? "playing" : "paused")
+                    << "; release simulation band / lower real support, then press T to play" << std::endl;
         }
-        // 准备姿态可无限等待 T，但需要控制线程持续确认状态正常，才能续期同一保持目标。
+        // 等待可无限持续；控制线程确认反馈正常后续期，发送线程单独重发不掩盖控制停滞。
         if (enabled_) RefreshHoldingCommand();
         break;
-      case ProgramState::CONTROL:
+      case ProgramState::CONTROL: {
+        const auto obs_start_time = Time::now();
+        const double interval_ms = last_control_time_
+            ? std::chrono::duration<double, std::milli>(obs_start_time - *last_control_time_).count() : 0.0;
+        last_control_time_ = obs_start_time;
+        max_control_interval_ms_ = std::max(max_control_interval_ms_, interval_ms);
         if (!GatherRobotStateToLogger()) throw std::runtime_error("Failed to gather robot state history");
         if (!GatherInputInterfaceData()) throw std::runtime_error("Failed to gather input interface data");
         UpdateHeadingState();
         if (!GatherObservations()) throw std::runtime_error("Failed to gather observations");
+        const auto obs_end_time = Time::now();
         if (!CreatePolicyCommand()) throw std::runtime_error("Failed to create policy command");
+        const auto motor_command_end_time = Time::now();
         if (!CurrentFrameAdvancement()) throw std::runtime_error("Failed to advance motion frame");
+        // 沿用 G1 的周期耗时输出，区分观测采集、推理与实际周期，便于定位动态部署延迟。
+        if (++logging_counter_ % 50 == 0) {
+          std::cout << "BUMI3_CONTROL_TIMING obs_us="
+                    << std::chrono::duration_cast<std::chrono::microseconds>(obs_end_time - obs_start_time).count()
+                    << " policy_us="
+                    << std::chrono::duration_cast<std::chrono::microseconds>(motor_command_end_time - obs_end_time).count()
+                    << " interval_ms=" << interval_ms << " max_interval_ms=" << max_control_interval_ms_ << '\n';
+          max_control_interval_ms_ = 0.0;
+        }
         break;
+      }
       case ProgramState::STOPPED:
         break;
     }
@@ -701,24 +678,26 @@ class Bumi3Deploy {
   bool real_ = false, has_offline_ = false, has_live_ = false, offline_smpl_ = false;
   bool five_point_ = false;
   int smpl_reference_dim_ = SMPL_REFERENCE_DIM;
-  bool live_ = false, enabled_ = false, entry_started_ = false, reset_with_reference_velocity_ = false;
+  bool live_ = false, enabled_ = false;
   bool reinitialize_heading_ = true;
-  double control_dt_ = 0.02;
+  double control_dt_ = 0.02, time_ = 0.0, duration_ = 3.0;
   const double input_dt_ = 0.01, publish_dt_ = 0.002;
-  int current_frame_ = 0, current_encoder_mode_ = 0, saved_frame_for_observation_window_ = 0, entry_step_ = 0;
+  int current_frame_ = 0, current_encoder_mode_ = 0, saved_frame_for_observation_window_ = 0;
+  std::optional<Time::time_point> last_control_time_;
+  uint64_t logging_counter_ = 0;
+  double max_control_interval_ms_ = 0.0;
   HeadingState heading_state_;
   RobotState used_low_state_data_;
-  std::array<double, BUMI3_NUM_MOTOR> entry_start_{};
   std::vector<double> last_action, obs_buffer_, encoder_obs_buffer_;
   std::vector<ActiveObservation> active_obs_functions_, active_encoder_obs_functions_;
   DataBuffer<MotorCommand> motor_command_buffer_;
-  // 动作与观测只由控制线程拥有；跨线程仅共享按键队列、命令快照、停止标志和异常。
+  // 动作与观测只由控制线程拥有；跨线程仅共享输入请求、命令快照、停止标志和异常。
   std::thread input_thread_, command_writer_thread_, control_thread_;
   std::atomic<bool> stop_requested_{false};
   bool stopped_ = false;
   std::mutex input_mutex_, command_publish_mutex_, error_mutex_, wakeup_mutex_;
   std::condition_variable wakeup_;
-  std::vector<int> pending_keys_;
+  std::vector<InputCommand> pending_input_commands_;
   std::exception_ptr thread_error_;
   MotionDataReader motion_reader_;
   std::shared_ptr<const MotionSequence> current_motion_;

@@ -40,7 +40,9 @@ struct MotorCommand {
 
 // 操作状态与 G1 分工相同：输入阶段设置标志，由控制状态机决定何时接管与播放。
 struct OperatorState {
-  bool stop = false, start = false, play = false;
+  bool stop = false;   // 请求停止控制并退出。
+  bool start = false;  // 请求从准备姿态保持进入策略控制，不自动播放参考。
+  bool play = false;   // 参考运动播放状态，与策略是否接管分别管理。
 };
 
 // BUMI3 的朝向基准同时保存机器人和参考首帧，保持既有水平朝向对齐方式。

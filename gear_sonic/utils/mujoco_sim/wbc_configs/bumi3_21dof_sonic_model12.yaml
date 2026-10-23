@@ -6,6 +6,17 @@ SIMULATOR: mujoco
 NUM_JOINTS: 21
 # 修改此处即可同步设置下方 ros2.domain_id，无需维护第二份域编号。
 DOMAIN_ID: &bumi3_domain 0
+# 与 G1 一样默认悬挂启动；根高只影响仿真开机位置，不改变训练契约或参考动作。
+# MuJoCo 窗口按 7/8 每次降低/升高 0.1 米，按 9 释放或恢复悬挂。
+ENABLE_ELASTIC_BAND: true
+ELASTIC_BAND_HEIGHT: 0.75
+elastic_band:
+  # 位置 Kp、Kd 分别乘以当前 MJCF 整机质量，形成约 20 rad/s 的临界阻尼悬挂。
+  position_stiffness_per_kg: 400.0
+  position_damping_per_kg: 40.0
+  # 姿态保持只用于吊起准备，释放后不再施加额外的根部力矩。
+  orientation_stiffness: 100.0
+  orientation_damping: 10.0
 
 version: 1
 contract: gear_sonic_deploy/policy/bumi3/observation_config.yaml

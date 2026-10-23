@@ -87,7 +87,7 @@ python gear_sonic_deploy/reference/bumi3_convert_motion.py
 python gear_sonic/scripts/run_sim_loop.py --robot-type bumi3
 ```
 
-看到 `BUMI3_SIM_READY` 后启动控制端。
+看到 `BUMI3_SIM_READY` 后启动控制端。默认开启与 G1 相同操作方式的悬挂带，机器人从默认关节姿态、根高 0.75 米处开始物理仿真；此时尚未使能电机，关节会自然下垂。在 **MuJoCo 窗口**按 `7` 降低悬挂高度、`8` 升高，每次 0.1 米；`9` 开关悬挂带。
 
 ### 终端二：策略控制端
 
@@ -105,7 +105,14 @@ bash gear_sonic_deploy/deploy.sh --robot-type bumi3 sim --encoder smpl
 
 两条命令任选一条。指定起始运动时追加 `--motion-name '<播放清单中的运动名称>'`；未指定则从清单第一条开始。自定义转换清单可追加 `--dataset <转换后的dataset.json>`。
 
-仿真自动重置到选中运动第一帧，策略开始运行；按 **`T`** 开始播放参考运动，**无需按 `]`**。
+操作顺序：
+
+1. 控制端启动后自动使能电机，用约 **3 秒**平滑进入**训练默认站姿**；不会重置到选中运动第一帧。
+2. 看到 `BUMI3_INIT_DONE` 后，按英文半角 **`]`**，由策略接管，参考运动仍暂停在第一帧。
+3. 在 **MuJoCo 窗口**按 **`7`** 逐步下放，双脚接地后按 **`9`** 释放悬挂。
+4. 回到控制端终端，按 **`T`** 播放所选运动，按 **`O`** 停止退出。
+
+`T` 只开始或继续播放，重复按不会暂停；`R` 将离线参考回到首帧并暂停，策略继续运行。仿真在未使能时仍有重力，悬挂开关不会冻结物理过程。
 
 ## 4. 离线 sim2real
 
@@ -127,7 +134,7 @@ export TensorRT_ROOT="$HOME/sonic/.deps/TensorRT-10.13.0.35"
 export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$TensorRT_ROOT/targets/x86_64-linux-gnu/lib:$TensorRT_ROOT/lib:$CUDA_HOME/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}:$HOME/app/miniconda3/lib"
 ```
 
-新终端加载第 1 节的环境和 GPU 库路径，再执行（替换为本机 EtherCAT 网卡）：
+**启动即会自动使能并进入准备姿态，先将机器人机械悬挂／支撑稳妥。**新终端加载第 1 节的环境和 GPU 库路径，再执行（替换为本机 EtherCAT 网卡）：
 
 ```bash
 BUMI_BRIDGE_SUDO=1 bash gear_sonic_deploy/deploy.sh \
@@ -138,12 +145,12 @@ BUMI_BRIDGE_SUDO=1 bash gear_sonic_deploy/deploy.sh \
 
 操作顺序：
 
-1. 等待 `BUMI3_CONTROL_READY`，按英文半角 **`]`**。
-2. 机器人用约 **3 秒**平滑进入所选运动第一帧的**关节姿态**，随后持续 PD 保持，策略尚未启动。
-3. 看到 `BUMI3_REAL_HOLDING` 后，按 **`T`** 启动策略并播放运动。
-4. 按 **`O`** 停止退出；退出会请求去使能，但软件日志不能证明电机已实际断力，必要时使用实体急停。
+1. 启动后自动使能，用约 **3 秒**平滑进入**训练默认站姿**，随后持续 PD 保持；这不是所选运动第一帧，策略尚未启动。
+2. 看到 `BUMI3_INIT_DONE` 后，按英文半角 **`]`** 让策略接管，离线参考仍暂停在第一帧。
+3. 保持机械支撑，逐步下放至双脚接地、机器人稳定，再降低／解除支撑；按 **`T`** 开始播放运动。
+4. 按 **`O`** 请求 Noetix 去使能并退出；软件日志不能证明电机已实际断力，必要时使用实体急停。
 
-这一步只控制关节，不会将真机的世界位置或朝向重置成参考值。
+准备阶段只控制关节，不会将真机的世界位置或朝向重置成参考值。`T` 不负责首次策略接管，也不是播放／暂停切换键。
 
 ## 5. PICO 实时 SMPL 遥操作
 
@@ -187,30 +194,34 @@ python gear_sonic/scripts/pico_manager_thread_server.py \
 bash gear_sonic_deploy/deploy.sh --robot-type bumi3 sim --input-type zmq
 ```
 
-该命令自动选择 SMPL 模型，接收本机 `tcp://127.0.0.1:5556` 的实时数据，不需要离线 CSV。等待有效 SMPL 数据并显示 `BUMI3_CONTROL_READY` 后，在控制端按 **`T`** 跟随，按 **`O`** 退出。
+该命令自动选择 SMPL 模型，接收本机 `tcp://127.0.0.1:5556` 的实时数据，不需要离线 CSV。收到有效 SMPL 数据后，控制端自动使能并用约 3 秒进入训练默认站姿；等待 `BUMI3_INIT_DONE`，按 **`]`** 让策略接管，人体参考仍冻结。在 MuJoCo 窗口用 **`7`** 逐步下放至接地、**`9`** 释放悬挂，再回控制端按 **`T`** 开始跟随；**`O`** 退出。
 
 ### 换成 PICO 真机遥操作
 
-关闭 MuJoCo 和仿真控制端，保留 PICO 发送端。控制终端加载相同环境后改用：
+关闭 MuJoCo 和仿真控制端，保留 PICO 发送端。**先为真机提供机械悬挂／支撑**，控制终端加载相同环境后改用：
 
 ```bash
 BUMI_BRIDGE_SUDO=1 bash gear_sonic_deploy/deploy.sh \
   --robot-type bumi3 real --interface enp132s0 --input-type zmq
 ```
 
-先按 **`]`**，在约 3 秒内进入**训练默认关节姿态并保持**；再按 **`T`** 启动策略跟随 PICO。实时模式没有离线运动第一帧。发送端与策略分属两台电脑时，控制命令追加 `--zmq-host <发送端电脑IP>`。
+收到有效 PICO 数据后自动使能，用约 3 秒进入**训练默认关节姿态并保持**；看到 `BUMI3_INIT_DONE` 后按 **`]`** 让策略接管，此时人体参考冻结。逐步下放接地、机器人稳定后降低／解除机械支撑，再按 **`T`** 跟随 PICO；**`O`** 请求去使能并退出。实时模式没有离线运动第一帧。发送端与策略分属两台电脑时，控制命令追加 `--zmq-host <发送端电脑IP>`。
 
 ## 6. 按键与常见问题
 
 | 按键 | 功能 |
 | --- | --- |
-| `]` | 真机请求使能并平滑进入准备姿态 |
-| `T` | 真机首次启动策略；之后开始／暂停参考播放或跟随，暂停参考不会退出策略 |
-| `P` | 离线模式切换下一个运动；真机需重新按 `]`、`T` |
-| `R` | 离线模式重置当前运动；真机需重新按 `]`、`T` |
-| `O` | 停止并退出控制端 |
+| `]` | 准备完成后由策略接管，参考保持暂停；sim／real 相同 |
+| `T` | 开始／继续播放离线参考或跟随实时输入；再次按不会暂停 |
+| `N`／`P` | 离线下一条／上一条运动；切换后参考暂停，保持已有策略状态 |
+| `R` | 离线回到参考首帧并暂停；实时冻结当前人体参考；不去使能、不瞬移机器人 |
+| `I` | 重新对齐参考与机器人当前的 heading |
+| `ENTER` | 同时配置离线与实时输入时切换数据源，切换后参考暂停 |
+| `O` | 请求 Noetix 去使能并退出控制端 |
+| `7`／`8` | MuJoCo 窗口：降低／升高悬挂目标，每次 0.1 米 |
+| `9` | MuJoCo 窗口：关闭／开启悬挂带 |
 
-按键应在控制端终端输入，无需回车。
+除 `7/8/9` 在 MuJoCo 窗口输入外，其余按键在控制端终端输入，无需额外回车。准备阶段的自动使能和 3 秒过渡不依赖 `]`；`BUMI3_INIT_DONE` 才表示可以按 `]` 接管。
 
 - **`libnvinfer.so.10` 找不到：**确认 TensorRT 已安装，`TensorRT_ROOT` 指向实际安装根目录，`BUMI_TRT_LIB` 指向实际库目录，并在当前控制终端重新加载 `LD_LIBRARY_PATH`。
 - **`GLIBCXX_3.4.30` 找不到：**旧 Conda C++ 库可能抢先加载；在当前终端执行 `export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"`，避免全局覆盖其他项目的环境。
@@ -248,7 +259,7 @@ BUMI3 源码位于 `gear_sonic_deploy/src/bumi3/bumi3_deploy_onnx_ref/`，以下
 | 加上 690 维反馈历史后的联合 ONNX 输入 | 1470 | **1200** |
 | PICO 发布参数 | `--smpl-only` | `--smpl-five-point` |
 
-两种方案的 Robot 分支均为 **1170 维输入、21 维动作输出**；新五点分支也是 21 维动作输出。五点顺序固定为头、左腕、右腕、左踝、右踝（骨架索引 `15,20,21,7,8`）。每帧先放 15 维局部位置，再放 30 维局部旋转；根朝向单独拼接。启动时根据机器人 IMU 做 yaw 对齐。
+两种方案的 Robot 分支均为 **1170 维输入、21 维动作输出**；新五点分支也是 21 维动作输出。五点顺序固定为头、左腕、右腕、左踝、右踝（骨架索引 `15,20,21,7,8`）。每帧先放 15 维局部位置，再放 30 维局部旋转；根朝向单独拼接。策略接管时根据机器人 IMU 做 yaw 对齐，之后可用 `I` 重新对齐。
 
 **需要先完成新配置训练并导出模型。**旧完整 SMPL 的 1470 维 ONNX 不能用于五点模式。请使用同一个新检查点导出的 Robot、SMPL 两个联合 ONNX；不使用独立的 `*_encoder.onnx`。
 
@@ -298,7 +309,7 @@ bash gear_sonic_deploy/deploy.sh --robot-type bumi3 sim \
   --encoder smpl
 ```
 
-按 `T` 播放。使用新训练任务的 Robot 分支时，把 `--encoder smpl` 改为 `--encoder robot`。指定动作仍加 `--motion-name '<动作名>'`，`P` 切换下一个动作。
+控制端自动使能并用约 3 秒进入训练默认站姿；看到 `BUMI3_INIT_DONE` 后按 `]` 让策略接管，参考仍暂停。再在 MuJoCo 窗口用 `7` 下放至接地、`9` 释放悬挂，回控制端按 `T` 播放。使用新训练任务的 Robot 分支时，把 `--encoder smpl` 改为 `--encoder robot`。指定动作仍加 `--motion-name '<动作名>'`，`N` 下一条、`P` 上一条，切换后参考暂停。
 
 **离线 sim2real：**不启动 MuJoCo，在已加载环境的控制终端执行（网卡换为实际值）：
 
@@ -309,7 +320,7 @@ BUMI_BRIDGE_SUDO=1 bash gear_sonic_deploy/deploy.sh --robot-type bumi3 real \
   --encoder smpl
 ```
 
-先 `]` 平滑进入参考首帧关节姿态并持续保持，再 `T` 启动策略，`O` 退出。准备姿态、关节映射和 ROS 2 通路与第 4 节一致。
+启动前提供机械悬挂／支撑；控制端自动使能并用约 3 秒进入训练默认站姿。看到 `BUMI3_INIT_DONE` 后按 `]` 让策略接管，再逐步下放接地、降低／解除支撑，按 `T` 播放，`O` 请求去使能并退出。准备姿态不是参考首帧，关节映射和 ROS 2 通路与第 4 节一致。
 
 ### PICO 五点遥操作
 
@@ -342,7 +353,7 @@ BUMI_BRIDGE_SUDO=1 bash gear_sonic_deploy/deploy.sh --robot-type bumi3 real \
   --input-type zmq
 ```
 
-实时控制自动选择新 SMPL 模型，无需离线 CSV。仿真按 `T` 跟随；真机先 `]` 进入训练默认关节姿态并保持，再 `T` 跟随。跨电脑传输时加 `--zmq-host <PICO发送端IP>`。
+实时控制自动选择新 SMPL 模型，无需离线 CSV。有效数据到达后自动使能并用约 3 秒进入训练默认站姿，看到 `BUMI3_INIT_DONE` 后按 `]` 接管，人体参考仍冻结。仿真在 MuJoCo 窗口用 `7` 下放、`9` 释放悬挂；真机应从启动前保持机械支撑，接管后逐步下放接地、降低／解除支撑。最后在控制端按 `T` 跟随，`O` 请求去使能并退出。跨电脑传输时加 `--zmq-host <PICO发送端IP>`。
 
 正常五点策略日志应显示 `encoder=smpl reference=510 history=690 total=1200`。离线窗口读取当前及后续十帧；实时窗口采用最近十帧、每帧间隔 0.02 秒，跨度 0.18 秒，因此相对窗口首帧存在相应延迟。断流或无效追踪会停止更新窗口，接收端沿用现有超时停控机制。模型维度、CSV 布局或消息版本不匹配时会报错。
 

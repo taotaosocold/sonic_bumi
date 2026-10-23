@@ -36,6 +36,18 @@ class SimpleKeyboard final : public InputInterface {
   SimpleKeyboard(const SimpleKeyboard&) = delete;
   SimpleKeyboard& operator=(const SimpleKeyboard&) = delete;
 
+  void update(const std::vector<int>& external_keys = {}) override {
+    auto keys = ReadKeys();
+    keys.insert(keys.end(), external_keys.begin(), external_keys.end());
+    input_command_ = DecodeKeys(keys);
+  }
+
+  InputCommand handle_input() override {
+    const auto command = input_command_;
+    input_command_ = {};
+    return command;
+  }
+
   std::vector<int> ReadKeys() override {
     std::vector<int> keys;
     if (!active_) return keys;
@@ -74,5 +86,6 @@ class SimpleKeyboard final : public InputInterface {
 
   termios saved_{};
   bool active_ = false;
+  InputCommand input_command_;
 };
 }  // BUMI3 操作输入的命名空间。

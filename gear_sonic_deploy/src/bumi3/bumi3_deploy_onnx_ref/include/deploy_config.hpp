@@ -129,10 +129,12 @@ struct DeployOptions {
                  "  --disable-cuda-graph    disable TensorRT CUDA graph capture\n"
                  "  --interface NAME        local hardware EtherCAT interface\n"
                  "  --external-bridge       connect to an existing ROS2 hardware bridge\n"
-                 "  --autoplay              start simulation reference playback\n"
+                 "  --autoplay              仿真按 ] 接管策略后开始播放参考；默认等待 T\n"
                  "  --loop-motion           repeat offline reference\n"
                  "  --duration SECONDS      stop after the given time\n"
-                 "  --validate-only         validate models/config without connecting a device\n";
+                 "  --validate-only         validate models/config without connecting a device\n"
+                 "  启动流程：自动使能并进入默认站姿，等待 ] 接管策略，再按 T 播放。\n"
+                 "  按键：N 下一条，P 上一条，R 回首帧暂停，I 对齐朝向，O 退出。\n";
   }
 };
 
@@ -336,7 +338,8 @@ class DeploymentConfigParser {
     if (options_.policy_fp16 && options_.policy_fp32) throw std::runtime_error("Choose --policy-fp16 or --policy-fp32");
     if (!options_.motion.empty() && (!options_.dataset.empty() || !options_.motion_name.empty()))
       throw std::runtime_error("--motion cannot be combined with --dataset or --motion-name");
-    if (options_.mode == "real" && options_.autoplay) throw std::runtime_error("Real deployment requires ] to enable");
+    if (options_.mode == "real" && options_.autoplay)
+      throw std::runtime_error("Real deployment does not support --autoplay; press ] to start policy, then T to play");
     if (options_.external_bridge && !options_.interface.empty()) throw std::runtime_error("External bridge cannot configure EtherCAT interface");
     if (options_.mode == "sim" && (options_.external_bridge || !options_.interface.empty())) throw std::runtime_error("Hardware bridge options are real-only");
   }
